@@ -104,15 +104,29 @@ function Show-ProgressBar {
         [bool]$IsNewLine = $true
     )
     $percentage = [math]::Round(($Current / $Total) * 100)
-    $barLength = 20
+    $barLength = 30
     $filledLength = [math]::Round(($Current / $Total) * $barLength)
-    $bar = "=" * $filledLength + "×" * ($barLength - $filledLength)
+    $bar = "█" * $filledLength + "░" * ($barLength - $filledLength)
     
-    if ($IsNewLine) {
-        Write-Host "`n进度: [$bar] $percentage% ($Current/$Total)`n" -ForegroundColor $Colors.Info
-    } else {
-        Write-Host "`r进度: [$bar] $percentage% ($Current/$Total)" -NoNewline -ForegroundColor $Colors.Info
-    }
+    # 根据完成百分比选择颜色
+    $color = if ($percentage -eq 100) { $Colors.Success }
+             elseif ($percentage -ge 80) { "Green" }
+             elseif ($percentage -ge 60) { "Cyan" }
+             elseif ($percentage -ge 40) { "Yellow" }
+             elseif ($percentage -ge 20) { "DarkYellow" }
+             else { "Red" }
+    
+    # 清除整个屏幕
+    Clear-Host
+    
+    # 显示进度条
+    Write-Host "进度: [$bar] $percentage% ($Current/$Total)`n" -ForegroundColor $color
+}
+
+# 清除进度条
+function Clear-ProgressBar {
+    # 清除整个屏幕
+    Clear-Host
 }
 
 # 测试练习
@@ -242,8 +256,11 @@ function Main {
             
             # 检查是否已完成所有练习
             if ($progress.Completed.Count -eq $exercises.Count) {
+                Clear-Host
                 Write-Host "`n🎉 恭喜！您已完成所有练习！" -ForegroundColor $Colors.Success
-                Write-Host "如果您想重新开始，请使用 'reset' 命令重置进度。" -ForegroundColor $Colors.Info
+                Write-Host "`n如果您想重新开始，请使用 'reset' 命令重置进度。" -ForegroundColor $Colors.Info
+                Write-Host "`n按任意键返回主菜单..." -NoNewline
+                $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
                 return
             }
             
@@ -251,7 +268,7 @@ function Main {
             
             while ($currentIndex -lt $exercises.Count) {
                 # 清除控制台
-                Clear-Host
+                Clear-ProgressBar
                 
                 $exercise = $exercises[$currentIndex]
                 $exerciseDir = Join-Path $ExercisesDir $exercise.Name
@@ -300,7 +317,7 @@ function Main {
                             Write-Host "💡 提示：请仔细检查您的代码，确保输出与期望完全一致。如果遇到困难，可以输入 'h' 获取提示。" -ForegroundColor $Colors.Warning
                             Write-Host "`n按任意键继续..." -NoNewline
                             $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
-                            Clear-Host
+                            Clear-ProgressBar
                         }
                     }
                     "h" {
@@ -312,12 +329,12 @@ function Main {
                             }
                             Write-Host "`n按任意键继续..." -NoNewline
                             $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
-                            Clear-Host
+                            Clear-ProgressBar
                         } else {
                             Write-Host "`n⚠️ 未找到提示文件。" -ForegroundColor $Colors.Warning
                             Write-Host "`n按任意键继续..." -NoNewline
                             $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
-                            Clear-Host
+                            Clear-ProgressBar
                         }
                     }
                     "n" {
@@ -367,8 +384,6 @@ function Main {
                 
                 Write-Host "`n✅ 初始代码恢复完成" -ForegroundColor $Colors.Success
                 Write-Host "✅ 已重置练习系统：" -ForegroundColor $Colors.Success
-                Write-Host "  - 删除了进度记录" -ForegroundColor $Colors.Info
-                Write-Host "  - 删除了所有编译文件" -ForegroundColor $Colors.Info
             }
         }
         
@@ -408,7 +423,6 @@ function Main {
         
         "verify" {
             Write-Host "欢迎使用 CStudy！🎯" -ForegroundColor $Colors.Info
-            Write-Host "这是一个帮助您学习 C 语言的练习系统。`n" -ForegroundColor $Colors.Info
             
             $progress = Get-Progress
             $totalExercises = $exercises.Count
@@ -449,7 +463,6 @@ function Main {
         
         default {
             Write-Host "欢迎使用 CStudy！🎯" -ForegroundColor $Colors.Info
-            Write-Host "这是一个帮助您学习 C 语言的练习系统。`n" -ForegroundColor $Colors.Info
             
             Write-Host "可用命令：" -ForegroundColor $Colors.Title
             Write-Host "  begin  - 开始练习" -ForegroundColor $Colors.Info
