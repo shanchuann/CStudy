@@ -1,0 +1,10 @@
+1. 使用double类型存储系数和计算结果
+2. 计算判别式：delta = b*b - 4*a*c
+3. 使用sqrt(delta)计算平方根
+4. 公式：x = (-b ± sqrt(delta)) / (2*a)
+5. 使用if-else处理不同情况：
+   - a = 0：一次方程
+   - delta > 0：两个不同实根
+   - delta = 0：两个相同实根
+   - delta < 0：无实根
+6. 使用printf("%.2f", 变量)控制输出精度 

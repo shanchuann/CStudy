@@ -8,17 +8,143 @@ $Colors = @{
     Title = "White"
     Task = "White"
     Points = "White"
+    AI = "Blue"
 }
 
 # 定义路径
 $ExercisesDir = "exercises"
 $BackupDir = "backup"
 $ProgressFile = ".progress"
+$OllamaPath = "AI_Server"  # 添加Ollama路径
+$UseAI = $false  # 添加AI功能开关
+$AIConfigFile = ".aiconfig"  # 添加AI配置文件
+
+# 启动Ollama服务
+function Start-OllamaService {
+    try {
+        # 检查是否已经有AI配置
+        if (Test-Path $AIConfigFile) {
+            $script:UseAI = (Get-Content $AIConfigFile) -eq "true"
+            
+            # 如果用户之前选择不使用AI，直接返回
+            if (-not $script:UseAI) {
+                Write-Host "已禁用AI功能。您可以随时通过重置系统来重新启用。" -ForegroundColor $Colors.Info
+                return $true
+            }
+        }
+        # 首次运行时询问是否使用AI功能
+        elseif (-not (Test-Path $ProgressFile)) {
+            Write-Host "`n是否启用AI辅助功能？这将需要下载约4GB的AI模型。(y/n): " -NoNewline -ForegroundColor $Colors.Prompt
+            $useAIInput = Read-Host
+            $script:UseAI = $useAIInput.ToLower() -eq 'y'
+            
+            # 保存AI配置
+            $script:UseAI.ToString().ToLower() | Set-Content $AIConfigFile
+            
+            if (-not $script:UseAI) {
+                Write-Host "已禁用AI功能。您可以随时通过重置系统来重新启用。" -ForegroundColor $Colors.Info
+                return $true
+            }
+        }
+        
+        # 如果不使用AI功能，直接返回
+        if (-not $script:UseAI) {
+            return $true
+        }
+        
+        # 检查Ollama服务是否已经运行
+        $testConnection = Invoke-RestMethod -Uri "http://localhost:11434/api/tags" -Method Get -ErrorAction SilentlyContinue
+        if ($null -eq $testConnection) {
+            Write-Host "正在启动Ollama服务..." -ForegroundColor $Colors.Info
+            
+            # 启动Ollama服务
+            $ollamaExe = Join-Path $OllamaPath "ollama.exe"
+            if (-not (Test-Path $ollamaExe)) {
+                Write-Host "❌ 未找到Ollama可执行文件，尝试在系统路径中查找..." -ForegroundColor $Colors.Warning
+                $ollamaExe = "ollama.exe"
+            }
+            
+            try {
+                # 尝试启动Ollama服务
+                Start-Process -FilePath $ollamaExe -WindowStyle Hidden
+                Write-Host "✅ Ollama服务启动命令已发送" -ForegroundColor $Colors.Success
+                
+                # 等待服务启动
+                $retryCount = 0
+                $maxRetries = 15  # 增加等待时间到30秒
+                do {
+                    Start-Sleep -Seconds 2
+                    $retryCount++
+                    try {
+                        $null = Invoke-RestMethod -Uri "http://localhost:11434/api/tags" -Method Get
+                        Write-Host "✅ Ollama服务已成功启动" -ForegroundColor $Colors.Success
+                        
+                        # 检查模型是否已下载
+                        $models = Invoke-RestMethod -Uri "http://localhost:11434/api/tags" -Method Get
+                        $modelExists = $models.models | Where-Object { $_.name -eq "deepseek-coder:6.7b" }
+                        
+                        if (-not $modelExists) {
+                            Write-Host "正在下载 deepseek-coder:6.7b 模型..." -ForegroundColor $Colors.Info
+                            Write-Host "下载可能需要几分钟时间，请耐心等待..." -ForegroundColor $Colors.Warning
+                            $pullProcess = Start-Process -FilePath $ollamaExe -ArgumentList "pull deepseek-coder:6.7b" -NoNewWindow -Wait -PassThru
+                            if ($pullProcess.ExitCode -eq 0) {
+                                Write-Host "✅ 模型下载完成" -ForegroundColor $Colors.Success
+                            } else {
+                                Write-Host "❌ 模型下载失败" -ForegroundColor $Colors.Error
+                                $script:UseAI = $false
+                            }
+                        }
+                        
+                        break
+                    } catch {
+                        if ($retryCount -eq $maxRetries) {
+                            Write-Host "❌ Ollama服务启动失败" -ForegroundColor $Colors.Error
+                            $script:UseAI = $false
+                            return $false
+                        }
+                        Write-Host "等待服务启动中... ($retryCount/$maxRetries)" -ForegroundColor $Colors.Info
+                    }
+                } while ($retryCount -lt $maxRetries)
+            } catch {
+                Write-Host "❌ 无法启动Ollama服务：$($_.Exception.Message)" -ForegroundColor $Colors.Error
+                $script:UseAI = $false
+                return $false
+            }
+        } else {
+            Write-Host "✅ Ollama服务已在运行" -ForegroundColor $Colors.Success
+            
+            # 检查模型是否存在
+            $models = Invoke-RestMethod -Uri "http://localhost:11434/api/tags" -Method Get
+            $modelExists = $models.models | Where-Object { $_.name -eq "deepseek-coder:6.7b" }
+            
+            if (-not $modelExists) {
+                Write-Host "正在下载 deepseek-coder:6.7b 模型..." -ForegroundColor $Colors.Info
+                Write-Host "下载可能需要几分钟时间，请耐心等待..." -ForegroundColor $Colors.Warning
+                $ollamaExe = Join-Path $OllamaPath "ollama.exe"
+                if (-not (Test-Path $ollamaExe)) {
+                    $ollamaExe = "ollama.exe"
+                }
+                $pullProcess = Start-Process -FilePath $ollamaExe -ArgumentList "pull deepseek-coder:6.7b" -NoNewWindow -Wait -PassThru
+                if ($pullProcess.ExitCode -eq 0) {
+                    Write-Host "✅ 模型下载完成" -ForegroundColor $Colors.Success
+                } else {
+                    Write-Host "❌ 模型下载失败" -ForegroundColor $Colors.Error
+                    $script:UseAI = $false
+                }
+            }
+        }
+        return $true
+    } catch {
+        Write-Host "❌ 无法启动Ollama服务：$($_.Exception.Message)" -ForegroundColor $Colors.Error
+        $script:UseAI = $false
+        return $false
+    }
+}
 
 # 从 README.md 文件读取练习信息
 function Get-Exercises {
     $exercises = @()
-    Get-ChildItem -Path $ExercisesDir -Directory | Sort-Object Name | ForEach-Object {
+    Get-ChildItem -Path $ExercisesDir -Directory | ForEach-Object {
         $readmeFile = Join-Path $_.FullName "README.md"
         if (Test-Path $readmeFile) {
             $content = Get-Content $readmeFile -Raw
@@ -57,8 +183,15 @@ function Get-Exercises {
                 $i++
             }
             
+            # 解析章节和练习编号
+            $nameParts = $_.Name -split '_'
+            $chapter = [int]$nameParts[0]
+            $exercise = [int]$nameParts[1]
+            
             $exercises += @{
                 Name = $_.Name
+                Chapter = $chapter
+                Exercise = $exercise
                 title = $title
                 description = $description.Trim()
                 task = $task.Trim()
@@ -66,7 +199,9 @@ function Get-Exercises {
             }
         }
     }
-    return $exercises
+    
+    # 按照章节和练习编号排序
+    return $exercises | Sort-Object { $_.Chapter }, { $_.Exercise }
 }
 
 # 获取进度
@@ -234,14 +369,121 @@ function Restore-InitialCode {
     }
 }
 
+# 调用Ollama API获取AI回答
+function Get-AIResponse {
+    param (
+        [string]$Prompt
+    )
+    
+    $uri = "http://localhost:11434/api/generate"
+    $body = @{
+        model = "deepseek-coder:6.7b"
+        prompt = $Prompt
+        stream = $false
+    } | ConvertTo-Json
+    
+    try {
+        $response = Invoke-RestMethod -Uri $uri -Method Post -Body $body -ContentType "application/json"
+        return $response.response
+    }
+    catch {
+        Write-Host "❌ 无法连接到Ollama服务。请确保：" -ForegroundColor $Colors.Error
+        Write-Host "1. Ollama已经安装并运行" -ForegroundColor $Colors.Warning
+        Write-Host "2. deepseek-coder:6.7b模型已经下载" -ForegroundColor $Colors.Warning
+        Write-Host "3. Ollama服务运行在默认端口(11434)" -ForegroundColor $Colors.Warning
+        return $null
+    }
+}
+
+# 显示AI辅助菜单
+function Show-AIHelp {
+    param (
+        [hashtable]$Exercise
+    )
+    
+    if (-not $script:UseAI) {
+        Write-Host "`n❌ AI功能未启用。如需使用，请重置系统并在初始化时选择启用AI功能。" -ForegroundColor $Colors.Warning
+        Write-Host "`n按任意键继续..." -ForegroundColor $Colors.Prompt
+        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+        return
+    }
+    
+    Clear-Host
+    Write-Host "🤖 AI辅助模式" -ForegroundColor $Colors.AI
+    Write-Host "===================" -ForegroundColor $Colors.AI
+    Write-Host "`n当前题目：" -ForegroundColor $Colors.Title
+    Write-Host $Exercise.title -ForegroundColor $Colors.Task
+    
+    Write-Host "`n任务描述：" -ForegroundColor $Colors.Title
+    Write-Host $Exercise.task -ForegroundColor $Colors.Task
+    
+    Write-Host "`n请选择需要AI帮助的类型：" -ForegroundColor $Colors.Prompt
+    Write-Host "[ 1:解题思路 | 2:代码指导 | 3:知识讲解 | 4:返回 ]" -ForegroundColor $Colors.Info
+    
+    $choice = Read-Host "`n请输入选择(1-4)"
+    
+    switch ($choice) {
+        "1" {
+            $prompt = "请分析以下C语言题目的解题思路：`n`n题目：$($Exercise.title)`n`n任务：$($Exercise.task)`n`n请给出详细的解题思路分析。"
+            Write-Host "`n正在思考中..." -ForegroundColor $Colors.AI
+            $response = Get-AIResponse -Prompt $prompt
+            if ($response) {
+                Write-Host "`n🤖 AI的解题思路分析：" -ForegroundColor $Colors.AI
+                Write-Host $response -ForegroundColor $Colors.Info
+            }
+        }
+        "2" {
+            $prompt = "请针对以下C语言题目提供代码实现指导：`n`n题目：$($Exercise.title)`n`n任务：$($Exercise.task)`n`n请给出关键代码实现的指导，但不要直接给出完整代码。"
+            Write-Host "`n正在思考中..." -ForegroundColor $Colors.AI
+            $response = Get-AIResponse -Prompt $prompt
+            if ($response) {
+                Write-Host "`n🤖 AI的代码实现指导：" -ForegroundColor $Colors.AI
+                Write-Host $response -ForegroundColor $Colors.Info
+            }
+        }
+        "3" {
+            $prompt = "请解释以下C语言题目涉及的重要知识点：`n`n题目：$($Exercise.title)`n`n知识点：$($Exercise.points)`n`n请详细讲解这些知识点。"
+            Write-Host "`n正在思考中..." -ForegroundColor $Colors.AI
+            $response = Get-AIResponse -Prompt $prompt
+            if ($response) {
+                Write-Host "`n🤖 AI的知识点讲解：" -ForegroundColor $Colors.AI
+                Write-Host $response -ForegroundColor $Colors.Info
+            }
+        }
+        "4" {
+            return
+        }
+        default {
+            Write-Host "❌ 无效的选择" -ForegroundColor $Colors.Error
+        }
+    }
+    
+    Write-Host "`n按任意键继续..." -ForegroundColor $Colors.Prompt
+    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+    Show-AIHelp -Exercise $Exercise
+}
+
 # 主函数
 function Main {
     param (
         [string]$Command
     )
     
-    # 获取练习列表
+    # 在开始时自动启动Ollama服务
+    Write-Host "正在初始化系统..." -ForegroundColor $Colors.Info
+    if (-not (Start-OllamaService)) {
+        Write-Host "❌ AI服务初始化失败。系统将以有限功能继续运行。" -ForegroundColor $Colors.Warning
+        Write-Host "您可以继续使用系统，但AI辅助功能将不可用。" -ForegroundColor $Colors.Info
+        $script:UseAI = $false
+        Write-Host "按任意键继续..." -ForegroundColor $Colors.Prompt
+        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+    }
+    
     $exercises = Get-Exercises
+    if ($exercises.Count -eq 0) {
+        Write-Host "❌ 错误：未找到任何练习。" -ForegroundColor $Colors.Error
+        return
+    }
     
     switch ($Command) {
         "begin" {
@@ -285,11 +527,14 @@ function Main {
                 Write-Host "`n学习要点" -ForegroundColor $Colors.Info
                 Write-Host $exercise.points -ForegroundColor $Colors.Points
                 
-                Write-Host "`n输入 'v' 验证，'h' 获取提示，'n' 进入下一个练习，'q' 退出: " -NoNewline -ForegroundColor $Colors.Prompt
-                
+                Write-Host "`n命令：" -ForegroundColor $Colors.Title
+                Write-Host "[ t:测试 | h:提示 | a:AI助手 | n:下一题 | q:退出 ]" -ForegroundColor $Colors.Info
+
+                Write-Host "`n请输入命令: " -NoNewline -ForegroundColor $Colors.Prompt
                 $input = Read-Host
-                switch ($input) {
-                    "v" {
+                
+                switch ($input.ToLower()) {
+                    "t" {
                         if (Test-Exercise $exerciseDir) {
                             Write-Host "`n✅ 恭喜！练习完成！" -ForegroundColor $Colors.Success
                             if (-not $progress.Completed.Contains($exercise.Name)) {
@@ -337,6 +582,10 @@ function Main {
                             Clear-ProgressBar
                         }
                     }
+                    "a" {
+                        Show-AIHelp -Exercise $exercise
+                        Clear-ProgressBar
+                    }
                     "n" {
                         if (-not $progress.Completed.Contains($exercise.Name)) {
                             Write-Host "`n⚠️ 注意：未完成验证，进度未更新" -ForegroundColor $Colors.Warning
@@ -366,6 +615,14 @@ function Main {
             Write-Host "确定要重置所有练习进度吗？这将删除所有进度记录和编译文件。(y/n): " -NoNewline
             $confirm = Read-Host
             if ($confirm -eq "y") {
+                # 重置AI功能选择
+                $script:UseAI = $false
+                
+                # 删除AI配置文件
+                if (Test-Path $AIConfigFile) {
+                    Remove-Item $AIConfigFile -Force
+                }
+                
                 Write-Host "`n开始恢复初始代码..." -ForegroundColor $Colors.Info
                 Restore-InitialCode
                 
@@ -461,6 +718,17 @@ function Main {
             }
         }
         
+        "help" {
+            Write-Host "欢迎使用 CStudy！🎯" -ForegroundColor $Colors.Info
+            
+            Write-Host "可用命令：" -ForegroundColor $Colors.Title
+            Write-Host "  begin  - 开始练习" -ForegroundColor $Colors.Info
+            Write-Host "  reset  - 重置所有练习" -ForegroundColor $Colors.Info
+            Write-Host "  list   - 显示练习列表" -ForegroundColor $Colors.Info
+            Write-Host "  verify - 验证所有练习" -ForegroundColor $Colors.Info
+            Write-Host "  help   - 显示帮助信息" -ForegroundColor $Colors.Info
+        }
+        
         default {
             Write-Host "欢迎使用 CStudy！🎯" -ForegroundColor $Colors.Info
             
@@ -469,6 +737,7 @@ function Main {
             Write-Host "  reset  - 重置所有练习" -ForegroundColor $Colors.Info
             Write-Host "  list   - 显示练习列表" -ForegroundColor $Colors.Info
             Write-Host "  verify - 验证所有练习" -ForegroundColor $Colors.Info
+            Write-Host "  help   - 显示帮助信息" -ForegroundColor $Colors.Info
         }
     }
 }

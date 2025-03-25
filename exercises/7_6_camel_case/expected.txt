@@ -1,0 +1,28 @@
+测试用例1：
+输入：
+hello world
+输出：
+驼峰命名法: helloWorld
+
+测试用例2：
+输入：
+user name and password
+输出：
+驼峰命名法: userNameAndPassword
+
+测试用例3：
+输入：
+first-name last-name
+输出：
+驼峰命名法: firstNameLastName
+
+测试用例4：
+输入：
+C programming language
+输出：
+驼峰命名法: cProgrammingLanguage
+
+测试用例5：
+输入：
+输出：
+驼峰命名法: 

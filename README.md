@@ -15,6 +15,9 @@
 3. GCC 编译器
    - 如果您还没有安装 GCC，请访问 [MinGW-w64](https://www.mingw-w64.org/) 下载并安装
    - 安装后请确保将 GCC 添加到系统环境变量中
+4. Ollama（用于AI辅助功能，可选）
+   - 从 [Ollama官网](https://ollama.ai) 下载并安装
+   - 下载 deepseek-coder:6.7b 模型：`ollama pull deepseek-coder:6.7b`
 
 ### 安装 CStudy
 
@@ -71,13 +74,38 @@
 - `.\CStudy begin` - 开始练习
 - `.\CStudy reset` - 重置进度
 - `.\CStudy list` - 显示列表
-- `.\CStudy progress` - 显示进度
+- `.\CStudy verify` - 验证所有练习
+- `.\CStudy help` - 显示帮助信息
 
 #### 系统内
 
-- `v` - 验证当前练习
+- `t` - 测试当前练习
 - `h` - 显示提示
+- `a` - 使用AI辅助
 - `n` - 跳转到下一个练习
+- `q` - 退出练习
+
+### AI辅助功能（可选）
+
+CStudy 集成了基于 Ollama 的 AI 辅助功能，可以帮助您更好地理解和完成练习：
+
+1. **使用方法**
+   - 在练习界面按 `a` 进入AI辅助模式
+   - 选择需要的帮助类型：
+     1. 解题思路分析
+     2. 代码实现指导
+     3. 知识点讲解
+
+2. **功能特点**
+   - 智能分析题目要求
+   - 提供针对性的解题思路
+   - 讲解相关知识点
+   - 给出代码实现指导（不直接提供完整答案）
+
+3. **注意事项**
+   - 首次使用时会自动启动 Ollama 服务
+   - 确保 deepseek-coder:6.7b 模型已正确安装
+   - AI 回答可能需要几秒钟的处理时间
 
 ## 目录结构
 
@@ -109,6 +137,13 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 1. 确保 GCC 已正确安装
 2. 检查环境变量是否正确设置
 3. 尝试重新打开终端
+
+### 如果AI功能无法使用
+
+1. 确保 Ollama 已正确安装
+2. 检查是否已下载 deepseek-coder:6.7b 模型
+3. 确认 Ollama 服务是否正在运行
+4. 检查 AI_Server 目录是否存在且包含必要文件
 
 ## 继续学习
 

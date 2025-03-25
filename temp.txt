@@ -1,0 +1,2 @@
+备份文件
+powershell -ExecutionPolicy Bypass .\backup.ps1
