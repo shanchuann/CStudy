@@ -1,7 +1,6 @@
 #include <stdio.h>
 
-int main() {
-    // 在这里编写代码
-    
-    return 0;
-} 
+int multiply(int a, int b) {
+    //TODO: 实现乘法计算，不需要实现main函数
+    return a * b;
+}

@@ -1,4 +1,4 @@
-练习 1：Hello World
+# 练习 1：Hello World
 
 欢迎来到 CStudy！这是你的第一个练习。
 

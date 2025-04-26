@@ -1,37 +1,44 @@
 #include <stdio.h>
+#include "../testwork/test_framework.h"
+
+// 全局变量定义
+char current_output[100];
+char current_input[100];
+
+// 判断是否为闰年
+int is_leap_year(int year) {
+    return (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+}
+
+// 获取月份的天数
+int get_days_in_month(int year, int month) {
+    if (month == 2) {
+        return is_leap_year(year) ? 29 : 28;
+    } else if (month == 4 || month == 6 || month == 9 || month == 11) {
+        return 30;
+    } else {
+        return 31;
+    }
+}
+
+// 计算一年中的第几天
+void day_of_year(int year, int month, int day) {
+    // 检查日期是否有效
+    if (month < 1 || month > 12 || day < 1 || day > get_days_in_month(year, month)) {
+        sprintf(current_output, "无效日期");
+        return;
+    }
+    
+    int days = 0;
+    for (int m = 1; m < month; m++) {
+        days += get_days_in_month(year, m);
+    }
+    days += day;
+    sprintf(current_output, "%d", days);
+    return;
+}
 
 int main() {
-    int year, month, day;
-    int days = 0;
-    int isLeapYear = 0;
-    
-    // 获取用户输入
-    printf("请输入年 月 日（用空格分隔）：");
-    scanf("%d %d %d", &year, &month, &day);
-    
-    // 判断是否为闰年
-    if ((year % 4 == 0 && year % 100 != 0) || year % 400 == 0) {
-        isLeapYear = 1;
-    }
-    
-    // 计算天数
-    switch (month) {
-        case 12: days += 30;
-        case 11: days += 31;
-        case 10: days += 30;
-        case 9: days += 31;
-        case 8: days += 31;
-        case 7: days += 30;
-        case 6: days += 31;
-        case 5: days += 30;
-        case 4: days += 31;
-        case 3: days += 28 + isLeapYear;
-        case 2: days += 31;
-        case 1: days += day;
-    }
-    
-    // 输出结果
-    printf("%d年%d月%d日是该年的第%d天\n", year, month, day, days);
-    
+    // 测试框架会自动调用day_of_year函数
     return 0;
 } 

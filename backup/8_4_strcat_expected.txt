@@ -1,0 +1,46 @@
+测试用例1：基本字符串连接
+输入：
+str1: "Hello, "
+str2: "World!"
+输出：
+str1: Hello, 
+str2: World!
+连接后: Hello, World!
+
+测试用例2：空字符串
+输入：
+str1: ""
+str2: "Empty string test"
+输出：
+str1: 
+str2: Empty string test
+连接后: Empty string test
+
+测试用例3：连接空字符串
+输入：
+str1: "Non-empty string"
+str2: ""
+输出：
+str1: Non-empty string
+str2: 
+连接后: Non-empty string
+
+测试用例4：长字符串
+输入：
+str1: "This is a very long string that "
+str2: "will be concatenated with another long string."
+输出：
+str1: This is a very long string that 
+str2: will be concatenated with another long string.
+连接后: This is a very long string that will be concatenated with another long string.
+
+测试用例5：特殊字符
+输入：
+str1: "String with \n and \t"
+str2: " and special chars"
+输出：
+str1: String with 
+ and 	 and special chars
+str2:  and special chars
+连接后: String with 
+ and 	 and special chars and special chars 

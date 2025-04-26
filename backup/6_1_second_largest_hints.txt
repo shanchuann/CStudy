@@ -1,0 +1,25 @@
+解题提示：
+
+1. 数组处理
+   - 首先检查数组大小是否至少为2
+   - 使用循环遍历数组元素
+
+2. 寻找第二大元素的方法
+   - 使用两个变量：largest和secondLargest
+   - largest记录当前最大值
+   - secondLargest记录当前第二大值
+
+3. 更新逻辑
+   - 如果当前元素大于largest，更新secondLargest为largest，largest为当前元素
+   - 如果当前元素小于largest但大于secondLargest，更新secondLargest
+   - 注意处理重复元素的情况
+
+4. 边界情况处理
+   - 数组为空或只有一个元素
+   - 所有元素都相同
+   - 数组元素为负数
+
+5. 代码优化建议
+   - 可以添加输入验证
+   - 考虑使用const修饰输入参数
+   - 可以添加错误处理机制 

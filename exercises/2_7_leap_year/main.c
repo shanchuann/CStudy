@@ -1,8 +1,6 @@
 #include <stdio.h>
 
-int main() {
-    // 在这里编写代码
-    // 提示：使用if-else和逻辑运算符
-    
-    return 0;
-} 
+// 判断是否为闰年
+int is_leap_year(int year) {
+    return (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+}

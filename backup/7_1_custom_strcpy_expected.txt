@@ -1,0 +1,28 @@
+测试用例1：
+输入：
+Hello, World!
+输出：
+复制后的字符串: Hello, World!
+
+测试用例2：
+输入：
+C Programming
+输出：
+复制后的字符串: C Programming
+
+测试用例3：
+输入：
+12345
+输出：
+复制后的字符串: 12345
+
+测试用例4：
+输入：
+输出：
+复制后的字符串: 
+
+测试用例5：
+输入：
+Hello World! Hello World!
+输出：
+复制后的字符串: Hello World! Hello World! 

@@ -267,70 +267,70 @@ function Clear-ProgressBar {
 # 测试练习
 function Test-Exercise {
     param (
-        [string]$ExerciseDir
+        [string]$ExerciseName
     )
     
-    $mainFile = Join-Path $ExerciseDir "main.c"
-    $expectedFile = Join-Path $ExerciseDir "expected.txt"
+    $exerciseDir = Join-Path $ExercisesDir $ExerciseName
+    $mainFile = Join-Path $exerciseDir "main.c"
+    $testFile = Join-Path $exerciseDir "test.c"
+    $frameworkFile = Join-Path $ExercisesDir "testwork\test_framework.h"
+    $outputFile = Join-Path $exerciseDir "test.exe"
     
-    if (-not (Test-Path $mainFile)) {
-        Write-Host "❌ 错误：未找到 $mainFile" -ForegroundColor $Colors.Error
-        Write-Host "请确保您已经创建了 main.c 文件。" -ForegroundColor $Colors.Warning
+    Write-Host "测试练习：$ExerciseName"
+    
+    # 检查测试文件是否存在
+    if (-not (Test-Path $testFile)) {
+        Write-Host "❌ 错误：找不到测试文件 $testFile"
         return $false
     }
     
-    if (-not (Test-Path $expectedFile)) {
-        Write-Host "❌ 错误：未找到 $expectedFile" -ForegroundColor $Colors.Error
-        Write-Host "请联系管理员，因为这是系统文件缺失的问题。" -ForegroundColor $Colors.Warning
+    # 检查测试框架文件是否存在
+    if (-not (Test-Path $frameworkFile)) {
+        Write-Host "❌ 错误：找不到测试框架文件 $frameworkFile"
         return $false
     }
     
-    # 编译代码
-    $outputFile = Join-Path $ExerciseDir "output.exe"
-    $compileOutput = & gcc -o $outputFile $mainFile 2>&1
+    Write-Host "编译程序..."
+    
+    # 编译程序
+    $compileResult = gcc -o $outputFile $mainFile $testFile -I $ExercisesDir
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "❌ 编译错误：" -ForegroundColor $Colors.Error
-        Write-Host $compileOutput
-        Write-Host "`n💡 提示：请检查您的代码是否有语法错误。" -ForegroundColor $Colors.Warning
+        Write-Host "❌ 编译失败"
         return $false
     }
+    Write-Host "✅ 编译成功"
+    
+    Write-Host "运行程序..."
     
     # 运行程序
-    $actualOutput = & $outputFile 2>&1
-    $expectedOutput = Get-Content $expectedFile -Raw
+    $output = & $outputFile
+    $exitCode = $LASTEXITCODE
     
-    # 清理输出文件
-    Remove-Item $outputFile -Force
-    
-    # 比较输出
-    $actualLines = $actualOutput.TrimEnd() -split "`n"
-    $expectedLines = $expectedOutput.TrimEnd() -split "`n"
-    
-    if ($actualLines.Count -ne $expectedLines.Count) {
-        Write-Host "❌ 输出行数不匹配：" -ForegroundColor $Colors.Error
-        Write-Host "期望：$($expectedLines.Count) 行"
-        Write-Host "实际：$($actualLines.Count) 行"
-        Write-Host "`n💡 提示：请检查您的输出是否包含了所有必要的行。" -ForegroundColor $Colors.Warning
+    # 检查输出中是否包含测试失败信息
+    if ($output -match "❌ 测试失败" -or $exitCode -ne 0) {
+        Write-Host "❌ 测试未通过"
+        Write-Host "实际输出："
+        Write-Host $output
         return $false
+    } else {
+        Write-Host "✅ 测试通过"
+        Write-Host "输出："
+        Write-Host $output
+        return $true
     }
-    
-    for ($i = 0; $i -lt $actualLines.Count; $i++) {
-        if ($actualLines[$i].TrimEnd() -ne $expectedLines[$i].TrimEnd()) {
-            Write-Host "❌ 第 $($i + 1) 行不匹配：" -ForegroundColor $Colors.Error
-            Write-Host "期望：'$($expectedLines[$i].TrimEnd())'"
-            Write-Host "实际：'$($actualLines[$i].TrimEnd())'"
-            Write-Host "`n💡 提示：请仔细检查第 $($i + 1) 行的内容，确保与期望输出完全一致。" -ForegroundColor $Colors.Warning
-            return $false
-        }
-    }
-    
-    return $true
 }
 
 # 备份初始代码
 function Backup-InitialCode {
     if (-not (Test-Path $BackupDir)) {
         New-Item -ItemType Directory -Path $BackupDir | Out-Null
+    }
+    
+    # 首先备份评测框架
+    $frameworkFile = Join-Path $ExercisesDir "test_framework.h"
+    if (Test-Path $frameworkFile) {
+        $backupFrameworkFile = Join-Path $BackupDir "test_framework.h"
+        Copy-Item $frameworkFile $backupFrameworkFile -Force
     }
     
     foreach ($exercise in $exercises) {
@@ -350,6 +350,14 @@ function Backup-InitialCode {
 
 # 恢复初始代码
 function Restore-InitialCode {
+    # 首先恢复评测框架
+    $backupFrameworkFile = Join-Path $BackupDir "test_framework.h"
+    if (Test-Path $backupFrameworkFile) {
+        $frameworkFile = Join-Path $ExercisesDir "test_framework.h"
+        Copy-Item $backupFrameworkFile $frameworkFile -Force
+        Write-Host "  ✅ 已恢复评测框架"
+    }
+    
     foreach ($exercise in $exercises) {
         Write-Host "`n恢复练习：$($exercise.Name)"
         $exerciseDir = Join-Path $ExercisesDir $exercise.Name
@@ -402,10 +410,20 @@ function Show-AIHelp {
     )
     
     if (-not $script:UseAI) {
-        Write-Host "`n❌ AI功能未启用。如需使用，请重置系统并在初始化时选择启用AI功能。" -ForegroundColor $Colors.Warning
-        Write-Host "`n按任意键继续..." -ForegroundColor $Colors.Prompt
-        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
-        return
+        Write-Host "`n❌ AI功能未启用。" -ForegroundColor $Colors.Warning
+        Write-Host "是否现在启用AI功能？(y/n): " -NoNewline -ForegroundColor $Colors.Prompt
+        $enableAI = Read-Host
+        
+        if ($enableAI.ToLower() -eq 'y') {
+            $script:UseAI = $true
+            $script:UseAI.ToString().ToLower() | Set-Content $AIConfigFile
+            Write-Host "✅ AI功能已启用！" -ForegroundColor $Colors.Success
+        } else {
+            Write-Host "已取消启用AI功能。" -ForegroundColor $Colors.Info
+            Write-Host "`n按任意键继续..." -ForegroundColor $Colors.Prompt
+            $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+            return
+        }
     }
     
     Clear-Host
@@ -461,6 +479,51 @@ function Show-AIHelp {
     Write-Host "`n按任意键继续..." -ForegroundColor $Colors.Prompt
     $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
     Show-AIHelp -Exercise $Exercise
+}
+
+# 开始练习
+function Start-Practice {
+    param (
+        [string]$ExerciseName
+    )
+    
+    $ExerciseDir = Join-Path $ExercisesDir $ExerciseName
+    $mainFile = Join-Path $ExerciseDir "main.c"
+    
+    if (-not (Test-Path $mainFile)) {
+        Write-Host "❌ 练习文件不存在：$ExerciseName"
+        return
+    }
+    
+    Write-Host "`n=== 开始练习：$ExerciseName ==="
+    Write-Host "输入 't' 运行测试"
+    Write-Host "输入 'h' 获取提示"
+    Write-Host "输入 'q' 退出练习"
+    
+    while ($true) {
+        $input = Read-Host "`n请输入命令"
+        
+        switch ($input.ToLower()) {
+            't' {
+                if (Test-Exercise $ExerciseName) {
+                    Write-Host "✅ 练习通过！"
+                } else {
+                    Write-Host "❌ 练习未通过，继续努力！"
+                    Write-Host "💡 提示：请仔细检查您的代码，确保输出与期望完全一致。如果遇到困难，可以输入 'h' 获取提示。"
+                }
+            }
+            'h' {
+                Show-Hint $ExerciseName
+            }
+            'q' {
+                Write-Host "退出练习"
+                break
+            }
+            default {
+                Write-Host "无效的命令，请输入 't'、'h' 或 'q'"
+            }
+        }
+    }
 }
 
 # 主函数
@@ -535,7 +598,7 @@ function Main {
                 
                 switch ($input.ToLower()) {
                     "t" {
-                        if (Test-Exercise $exerciseDir) {
+                        if (Test-Exercise $exercise.Name) {
                             Write-Host "`n✅ 恭喜！练习完成！" -ForegroundColor $Colors.Success
                             if (-not $progress.Completed.Contains($exercise.Name)) {
                                 $progress.Completed += $exercise.Name
@@ -640,7 +703,7 @@ function Main {
                 }
                 
                 Write-Host "`n✅ 初始代码恢复完成" -ForegroundColor $Colors.Success
-                Write-Host "✅ 已重置练习系统：" -ForegroundColor $Colors.Success
+                Write-Host "✅ 已重置练习系统" -ForegroundColor $Colors.Success
             }
         }
         
@@ -691,7 +754,7 @@ function Main {
                 $exerciseDir = Join-Path $ExercisesDir $exercise.Name
                 Write-Host "验证练习：$($exercise.title)" -ForegroundColor $Colors.Info
                 
-                if (Test-Exercise $exerciseDir) {
+                if (Test-Exercise $exercise.Name) {
                     Write-Host "✅ 通过" -ForegroundColor $Colors.Success
                     if (-not $progress.Completed.Contains($exercise.Name)) {
                         $progress.Completed += $exercise.Name

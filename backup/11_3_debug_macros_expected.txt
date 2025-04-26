@@ -1,0 +1,64 @@
+测试用例1：基本调试输出
+输入：
+运行程序
+预期输出：
+调试宏演示程序
+==============
+
+[2024-01-01 10:00:00][main.c:42] ERROR: 这是一条错误信息
+[2024-01-01 10:00:00][main.c:43] WARN: 这是一条警告信息
+[2024-01-01 10:00:00][main.c:44] INFO: 这是一条信息
+[2024-01-01 10:00:00][main.c:45] DEBUG: 这是一条调试信息
+
+测试用例2：函数调用跟踪
+输入：
+运行程序
+预期输出：
+测试函数调用：
+[2024-01-01 10:00:00][main.c:50] DEBUG: Entering function: exampleFunction
+[2024-01-01 10:00:00][main.c:52] INFO: Processing value: 42
+[2024-01-01 10:00:00][main.c:58] DEBUG: Memory allocated: ptr = 0x7fff12345678
+[2024-01-01 10:00:00][main.c:61] DEBUG: Value stored at 0x7fff12345678: 42
+[2024-01-01 10:00:00][main.c:64] DEBUG: Memory freed: 0x7fff12345678
+[2024-01-01 10:00:00][main.c:66] DEBUG: Exiting function: exampleFunction
+
+测试用例3：断言测试
+输入：
+运行程序
+预期输出：
+测试断言：
+断言测试通过！
+
+测试用例4：内存分配测试
+输入：
+运行程序
+预期输出：
+测试内存分配：
+[2024-01-01 10:00:00][main.c:72] DEBUG: Memory allocated: ptr = 0x7fff12345678
+分配的内存值：100
+
+测试用例5：错误处理测试
+输入：
+修改代码使断言失败
+预期输出：
+[2024-01-01 10:00:00][main.c:70] ERROR: Assertion failed: x > 0
+程序异常终止
+
+测试用例6：调试级别测试
+输入：
+#define DEBUG_LEVEL DEBUG_LEVEL_ERROR
+预期输出：
+[2024-01-01 10:00:00][main.c:42] ERROR: 这是一条错误信息
+
+测试用例7：内存分配失败测试
+输入：
+修改代码使malloc返回NULL
+预期输出：
+[2024-01-01 10:00:00][main.c:58] ERROR: Memory allocation failed: ptr
+程序异常终止
+
+测试用例8：函数参数测试
+输入：
+exampleFunction(-1)
+预期输出：
+[2024-01-01 10:00:00][main.c:54] WARN: Negative value received: -1 

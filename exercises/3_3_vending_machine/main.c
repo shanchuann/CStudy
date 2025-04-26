@@ -1,41 +1,60 @@
 #include <stdio.h>
+#include "../testwork/test_framework.h"
 
-int main() {
-    int price, payment;
-    int change;
+// 全局变量定义
+char current_output[100];
+char current_input[100];
+
+// 自动售货机函数
+void vending_machine(int money, int choice) {
+    // 商品信息
+    struct {
+        char name[20];
+        int price;
+    } products[] = {
+        {"Cola", 3},
+        {"Sprite", 3},
+        {"Water", 2},
+        {"Juice", 4},
+        {"Coffee", 5}
+    };
     
-    // 获取用户输入
-    printf("请输入商品价格（元）：");
-    scanf("%d", &price);
-    printf("请输入支付金额（元）：");
-    scanf("%d", &payment);
+    // 检查选择是否有效
+    if (choice < 1 || choice > 5) {
+        sprintf(current_output, "Invalid Choice");
+        return;
+    }
+    
+    // 检查金额是否足够
+    if (money < products[choice - 1].price) {
+        sprintf(current_output, "Not Enough Money");
+        return;
+    }
     
     // 计算找零
-    change = payment - price;
+    int change = money - products[choice - 1].price;
+    sprintf(current_output, "Buy %s Success, Change: %d", products[choice - 1].name, change);
+}
+
+// int main() {
+//     int money, choice;
     
-    // 输出找零金额
-    printf("找零：%d元\n", change);
+//     // 显示菜单
+//     printf("Welcome to Vending Machine!\n");
+//     printf("1. Cola - 3\n");
+//     printf("2. Sprite - 3\n");
+//     printf("3. Water - 2\n");
+//     printf("4. Juice - 4\n");
+//     printf("5. Coffee - 5\n");
     
-    // 计算并输出各种面额的数量
-    printf("100元：%d张\n", change / 100);
-    change %= 100;
+//     // 获取用户输入
+//     printf("Please input money: ");
+//     scanf("%d", &money);
+//     printf("Please choose product (1-5): ");
+//     scanf("%d", &choice);
     
-    printf("50元：%d张\n", change / 50);
-    change %= 50;
+//     // 调用自动售货机函数
+//     vending_machine(money, choice);
     
-    printf("20元：%d张\n", change / 20);
-    change %= 20;
-    
-    printf("10元：%d张\n", change / 10);
-    change %= 10;
-    
-    printf("5元：%d张\n", change / 5);
-    change %= 5;
-    
-    printf("2元：%d个\n", change / 2);
-    change %= 2;
-    
-    printf("1元：%d个\n", change);
-    
-    return 0;
-} 
+//     return 0;
+// } 

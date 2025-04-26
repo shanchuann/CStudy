@@ -1,8 +1,37 @@
 #include <stdio.h>
+#include "../testwork/test_framework.h"
 
-int main() {
-    // 在这里编写代码
-    // 提示：使用switch-case语句处理不同运算符
+// 全局变量定义
+char current_output[100];
+char current_input[100];
+
+// 计算函数
+void calculate(double a, double b, char op) {
+    double result;
     
-    return 0;
-} 
+    switch (op) {
+        case '+':
+            result = a + b;
+            sprintf(current_output, "%.6f", result);
+            break;
+        case '-':
+            result = a - b;
+            sprintf(current_output, "%.6f", result);
+            break;
+        case '*':
+            result = a * b;
+            sprintf(current_output, "%.6f", result);
+            break;
+        case '/':
+            if (b == 0) {
+                sprintf(current_output, "Error: Division by zero");
+                return;
+            }
+            result = a / b;
+            sprintf(current_output, "%.6f", result);
+            break;
+        default:
+            sprintf(current_output, "Error: Invalid operator");
+            return;
+    }
+}
