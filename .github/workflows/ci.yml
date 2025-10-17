@@ -1,0 +1,29 @@
+name: CStudy CI
+
+on:
+  push:
+    branches: [ "*" ]
+  pull_request:
+    branches: [ "*" ]
+
+jobs:
+  test-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: PowerShell 脚本测试
+        run: pwsh scripts/cstudy.ps1
+
+  test-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Bash 脚本测试
+        run: bash scripts/cstudy.sh
+
+  test-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Bash 脚本测试
+        run: bash scripts/cstudy.sh
