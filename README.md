@@ -1,7 +1,7 @@
 # CStudy - 脚本驱动的 C 语言学习平台
 
 CStudy 是一个跨平台、脚本驱动、类 rustlings 的 C 语言学习平台。它通过命令行提供题目列表、自动判题、AI 辅助、进度展示与一键重置等功能，支持 Windows PowerShell/WSL 及 Bash。
-> 注：powershell版本为正常使用版本，bash版本是由spec-kit开发的原始版本
+> 注：powershell版本为正常使用版本，bash版本是由spec-kit开发的原始版本,开发过程已上传至[个人网站](https://www.shanchuann.cn/2025/10/18/spec-kit/)
 
 ## 特色功能
 
@@ -101,3 +101,4 @@ OUTPUT:
 ## 许可证
 
 本项目基于 MIT 许可证开源，允许个人或商业场景下的使用、修改与分发，详见LICENSE.txt文件。
+
