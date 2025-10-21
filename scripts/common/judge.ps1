@@ -61,9 +61,23 @@ foreach ($case in $testCases) {
     $actual = ($actual -join "`n").Trim()
     $expected = $case.Output
     if ($actual -eq $expected) {
-        Write-Host "✓ 通过: 期望[$expected] 实际[$actual]" -ForegroundColor Green
+        Write-Host "  ✓ 通过: 期望" -ForegroundColor Green
+        foreach ($line in ($expected -split "`n")) {
+            if ($null -ne $line) { Write-Host ("  " + $line) }
+        }
+        Write-Host "  实际" -ForegroundColor Green
+        foreach ($line in ($actual -split "`n")) {
+            if ($null -ne $line) { Write-Host ("  " + $line) }
+        }
     } else {
-        Write-Host "✗ 失败: 期望[$expected] 实际[$actual]" -ForegroundColor Red
+        Write-Host "  ✗ 失败: 期望" -ForegroundColor Red
+        foreach ($line in ($expected -split "`n")) {
+            if ($null -ne $line) { Write-Host ("  " + $line) }
+        }
+        Write-Host "  实际" -ForegroundColor Red
+        foreach ($line in ($actual -split "`n")) {
+            if ($null -ne $line) { Write-Host ("  " + $line) }
+        }
         $allPassed = $false
     }
     Remove-Item $tmpInput -ErrorAction SilentlyContinue
