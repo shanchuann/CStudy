@@ -4,11 +4,11 @@
 
 ## 1. 总体目标与约束
 
-* 平台：Windows（主要用 PowerShell / .ps1 脚本作为主入口），依赖 `gcc`（MinGW/WSL/WSL2/安装路径要在 PATH 中）与 `ollama`（用于本地模型管理，若用户启用 AI）。
-* 功能：练习管理（Exercises）、自动判题（Detection）、本地 AI 辅助（AIserver）、控制台交互（仿 rustlings）。
+* 平台：Windows PowerShell 7、WSL/Linux 与 macOS，依赖 `gcc` 或 `clang`；AI 通过可配置的 OpenAI-compatible API 提供。
+* 功能：练习管理（Exercises）、自动判题、API AI 辅助和控制台交互。当前实现统一在根目录 `cstudy.py`。
 * 输出编码：控制台与文件读写均使用 UTF-8（避免中文乱码）。
 * UI 风格：命令行交互，主界面每次刷新（clear + 重新打印），提供可点击的 Ques.c 路径（依赖终端/编辑器支持）。
-* 用户操作模式：交互式单一进程/控制台，支持命令：`check`、`list`、`AI`、`quit`、`help me`（进入 AI 辅助），以及 `begin`（进入练习可选项）。
+* 用户操作模式：交互式控制台或非交互 CLI，支持 `list`、`run`、`check`、`watch`、`next`、`reset`、`ai` 等命令。
 * 必须实现：自动触发判题（保存文件后）与手动 `CStudy check` 的批量判题。
 
 ---
@@ -27,12 +27,9 @@ CStudy/
 │  │  │  └─ metadata.json (可选)
 │  │  └─ Exercise2/
 │  └─ Chapter2/
-├─ Detection/
-│  ├─ detect.ps1 (或 detect.py)
-│  └─ utils/ (日志、模板)
+├─ cstudy.py             # 发现、判题、状态、日志和 API AI
 ├─ AIserver/
-│  ├─ model/             # 存放 ollama 下载的模型（约定路径）
-│  └─ ai_manager.ps1
+│  └─ ai_server_stub.sh  # API 配置提示
 └─ CStudy.ps1
 ```
 
@@ -126,7 +123,7 @@ OUTPUT:
 
 ---
 
-## 3. 判题模块（Detection）详解
+## 3. 判题模块详解（cstudy.py）
 
 ### 3.1 功能概述
 
@@ -140,7 +137,7 @@ OUTPUT:
 
 1. **准备阶段**
 
-   * 复制 `Ques.c` 到临时目录（如 `Detection/temp/{chapter}_{exercise}/Ques.c`）以避免改动源文件。
+   * 复制源文件到系统临时目录，避免改动题目目录。
    * 若存在 `Test.c`（自带 harness），优先使用 `Test.c`（需约定 `Test.c` 如何包含/编译 Ques.c）。
 2. **编译**
 
@@ -199,35 +196,23 @@ OUTPUT:
 * **内存**：不能无限制；建议对进程设置最大内存（Windows 下可能需要额外原生 API，先做软限制并记录若超出则判为 runtime_error）。
 * **无限循环/阻塞**：超时处理终止子进程并标记为超时。
 * **文件系统/权限**：运行程序不得访问系统关键目录（建议在 temp 工作目录执行），不能允许网络访问（若能控制网络访问，则在进行评测时禁网）。
-* **日志**：每次判题记录 `Detection/logs/YYYYMMDD_HHMMSS_{exercise}.log`。
+* **日志**：每次判题记录 `.cstudy/logs/YYYYMMDD.jsonl`，状态写入 `.cstudy/state.json`。
 
 ---
 
-## 4. AIserver 模块详解（本地模型 + 提示词）
+## 4. AIserver 模块详解（API + 提示词）
 
 ### 4.1 功能定位
 
-* 使用 `ollama` 管理本地模型（`gpt-oss:20b` 为既定默认，但 UI 提供其它模型选择：`deepseek-coder-v2:16b`、`codellama:13b`、`codegemma:7b`）。
-* 当用户在控制台输入 `help me` 时，收集上下文（`description.md` + 当前 `Ques.c`），拼接提示词发送给本地模型，返回并展示建议/修复方案。
-* 提供 `CStudy AI` 命令用于管理（启用、停用、列出模型、切换、删除）。
+* 使用 OpenAI-compatible API 提供模型调用，API 地址由 `CSTUDY_API_BASE` 配置，密钥由 `CSTUDY_API_KEY` 或 `OPENAI_API_KEY` 提供。
+* 当用户执行 `cstudy ai <exercise>` 时，收集上下文（`description.md`、`Ques.c`、`Test.txt` 和最近判题结果），发送请求并展示建议。
+* `--hint-only` 模式只返回提示和调试问题，不直接覆盖用户代码。
 
-### 4.2 模型管理流程（细化）
+### 4.2 API 配置流程（细化）
 
-* 首次启动或用户选择启用 AI：
-
-  * 提示：是否开启 AI？（y/n）
-  * 若选择 y：
-
-    * 检查 `ollama` 是否安装（`ollama --version`）；若未安装，提示用户手动安装并给出命令说明（脚本不能自动安装系统级工具）。
-    * 列出推荐模型供用户选择（或默认 `gpt-oss:20b`）。
-    * 下载模型：`ollama pull <model>` 或 `ollama run <model>`（根据 ollama 参数）。
-    * 将模型存放在 `AIserver/model/`（或 ollama 的默认存储）；记录到 `AIserver/state.json`（已启用模型信息）。
-    * 启动模型服务（如需）：`ollama run <model> --detach`（视 ollama 提供的运行方式）。
-* 停用：停止模型服务（`ollama stop` 或 `ollama rm` 具体命令视 ollama 版本）。
-* 切换模型：
-
-  * 提示是否删除旧模型文件（若选择删除则运行 `ollama rm <old>` 并 `ollama pull <new>`）。
-* 列表显示：`CStudy AI list` 显示本地已下载模型与运行状态。
+* 默认地址为 `https://api.openai.com/v1`，默认模型为 `gpt-4o-mini`。
+* 兼容网关只需设置 `CSTUDY_API_BASE` 和 `CSTUDY_AI_MODEL`。
+* 请求超时、HTTP 错误和响应结构错误必须返回明确错误码，且不得将 API 密钥写入日志。
 
 ### 4.3 AI 提示词（Prompt）模板（核心）
 
@@ -275,7 +260,7 @@ OUTPUT:
 ### 5.1 启动（`./CStudy` 或 `CStudy.ps1`）
 
 * 创建一个新控制台（PowerShell `Start-Process powershell -ArgumentList "-NoExit -File CStudy.ps1"` 或 `Start-Process -FilePath "powershell"` 并传参），在新控制台中进入交互模式。
-* 首次打印 ASCII 欢迎横幅（你给的那段 ASCII），随后打印欢迎语与当前练习进度条（样式仿 rustlings）：
+* 首次打印 ASCII 欢迎横幅，随后打印欢迎语与当前练习进度条：
 
   * 进度条格式示例：`[===*******] 3/10`（已完成/总题数）
   * 显示下一题的路径（绝对或相对路径），若支持终端点击则尽量使路径以可识别格式显示。
@@ -379,7 +364,7 @@ Register-ObjectEvent $fsw Changed -Action { # 调用判题函数 }
 
 ### 7.1 日志文件
 
-* 位置：`Detection/logs/` 与 `AIserver/logs/`
+* 位置：`.cstudy/logs/`；API 密钥和响应正文不写入日志。
 * 命名：`YYYYMMDD_HHMMSS_{module}_{exercise}.log`
 * 内容必须包含：时间戳、操作类型（compile/run/pull-model）、执行命令、stdout、stderr、返回码。
 
@@ -420,7 +405,7 @@ gcc: error: ...
 
 ## 8. 测试文件与清理规则（你的第5节要求）
 
-* **测试时临时文件**（可执行文件、临时输入输出、临时日志）均放在 `Detection/temp/{timestamp}_{exercise}/`。
+* **测试时临时文件**（可执行文件、临时输入输出）均放在系统临时目录，测试结束后清理。
 * **测试结束**：判题完成后删除该 temp 目录（除非 dev 模式开启用于调试）。生产默认清除，记录清除日志。
 * **不要删除 Exercises 中的源文件或用户代码**。测试清理仅影响临时 artifacts。
 * **保留日志**：日志可以长期保存，或按策略（保留 30 天）清理。
@@ -434,41 +419,40 @@ gcc: error: ...
 ### 9.1 生成 `CStudy.ps1` 主脚本 的提示词
 
 ```text
-任务：生成 Windows PowerShell 脚本 CStudy.ps1，实现交互式 CLI 的主循环，功能包括：
+任务：维护跨平台入口，核心逻辑位于根目录 `cstudy.py`，功能包括：
 - 启动新控制台并进入交互界面（欢迎横幅、进度条）。
-- 支持命令：check、list、AI、help me、quit。
+- 支持命令：list、run、check、watch、next、reset、ai、quit。
 - 支持打开 Ques.c（使用 EDITOR env 或 notepad.exe）。
-- 与 Detection 模块交互（调用 detect.ps1）。
-编码：PowerShell，输出编码 UTF-8。
+- 由 `cstudy.ps1` 和 `cstudy.sh` 转发到 Python 核心，输出编码 UTF-8。
 请生成注释明确、模块化的脚本，并包含用于单元测试的示例函数。
 ```
 
-### 9.2 生成 `detect.ps1`（判题脚本） 的提示词
+### 9.2 判题核心维护提示词
 
 ```text
-任务：生成 detect.ps1，用于对单个练习目录进行判题，输入参数为练习路径（例如 Exercises/Chapter1/Exercise1）。
+任务：维护 `cstudy.py` 中的判题实现，用于对单个练习目录进行判题。
 要求：
 - 从 Test.txt 读取多个样例（规范在 prompt 中提供）。
 - 编译 Ques.c（使用 gcc -std=c11）。
 - 对每个样例运行可执行程序并比较输出。
-- 支持超时（2s/样例）和记录日志到 Detection/logs。
+- 支持单用例/整题超时和记录日志到 `.cstudy/logs/`。
 - 输出 JSON 格式结果。
 ```
 
-### 9.3 生成 AI 管理脚本 `ai_manager.ps1` 的提示词
+### 9.3 API AI 配置提示词
 
 ```text
-任务：生成 ai_manager.ps1 管理 ollama 模型：list/pull/run/stop/delete。
+任务：生成 API AI 管理脚本，支持检查配置、选择模型和查看请求状态。
 要求：
-- 提供函数：IsOllamaInstalled, ListModels, PullModel, RunModel, StopModel, DeleteModel。
+- 提供函数：GetApiConfig, ValidateApiConfig, InvokeAiHelp。
 - 与 CStudy 主流程可交互（返回状态码与 descriptive message）。
-- 日志记录至 AIserver/logs。
+- API 密钥不得写入日志；请求由 `cstudy.py` 直接发送。
 ```
 
 ### 9.4 生成 README/文档 提示词
 
 ```text
-任务：生成 README.md，包含安装步骤（gcc、ollama）、如何运行 CStudy、常见问题排错、以及文件/测试格式示例。
+任务：生成 README.md，包含安装步骤（gcc、API 配置）、如何运行 CStudy、常见问题排错、以及文件/测试格式示例。
 语言：中文
 ```
 
@@ -482,8 +466,8 @@ gcc: error: ...
 2. `CStudy list` 能列出所有题目，并显示题目状态、路径（点击可用）。
 3. `CStudy check` 能遍历 Exercises 并对每题返回结构化结果（compile/run/cases）。
 4. 单题页面监听 `Ques.c` 保存事件并自动触发判题；判题通过后可选择跳转下一题。
-5. AI 管理界面能够检测 `ollama` 安装状态、列出模型、拉取并启动模型（若用户允许）。
-6. `help me` 能把 `description.md` + `Ques.c` + `Test.txt` 组织成标准 prompt 调用本地模型并把结果格式化返回。
+5. AI 辅助能够检测 API 配置状态、调用模型并报告超时或 HTTP 错误。
+6. `cstudy ai <exercise>` 能把 `description.md` + `Ques.c` + `Test.txt` 组织成标准 prompt，通过可配置的 OpenAI-compatible API 返回建议。
 7. 判题过程对临时文件进行清理、生成日志并返回合适的退出码。
 
 ### 10.2 示例测试用例（手动执行）
@@ -491,7 +475,7 @@ gcc: error: ...
 * 测试 1：有语法错误的 Ques.c → `check` 或 自动触发 时应返回 `compile_error` 且展示 gcc 错误信息。
 * 测试 2：通过编译但输出不一致 → 返回失败样例详情。
 * 测试 3：超时（在 Ques.c 中写无限循环） → 返回超时的样例标记，并杀死进程。
-* 测试 4：AI 管理：在无 ollama 时选择启用 AI → 脚本应提示并指示安装方法（不自动安装）。
+* 测试 4：AI 配置缺失时执行辅助 → 脚本应提示设置 API key，且不修改题目文件。
 * 测试 5：保存 Ques.c 后自动判题并在通过后提示“是否跳转下一题”。
 
 ---
@@ -499,7 +483,7 @@ gcc: error: ...
 ## 11. 安全、资源限制与未来扩展建议
 
 * 在判题执行层面加入更严格的沙箱（如使用 WSL/容器/虚拟化运行被测程序），避免任意代码影响宿主系统。
-* 为大模型（20B 等）提供异步管理（模型下载/更新由 `CStudy AI` 命令触发，UI 显示下载进度）。
+* AI 不启动本地模型运行时；模型名称和 API 地址通过环境变量或配置文件指定。
 * 提供 CI 配置（GitHub Actions）以验证脚本在 Windows runner 上的可执行性（或使用 Windows Server 2019/2022 runner）。
 * 支持多人共享题库（git-submodule）与版本管理（题目更新时自动提示）。
 * 为提高判题灵活性，后续可支持模糊匹配（忽略行尾空格）、自定义 judge 程序（Test.c 作为 harness）。
@@ -556,11 +540,11 @@ OUTPUT:
 
 ## 开发者清单（Quick Implementation Checklist）
 
-* [ ] 确认开发环境：Windows + PowerShell、gcc 可用、ollama 可选。
+* [ ] 确认开发环境：Windows + PowerShell、gcc 可用、API key 可选。
 * [ ] 搭建目录结构（按规范）。
 * [ ] 编写 `detect.ps1`（判题核心、日志、超时、返回 JSON）。
 * [ ] 编写 `CStudy.ps1`（主 UI、命令解析、文件监控、调用 detect）。
-* [ ] 编写 `ai_manager.ps1`（ollama 管理逻辑）。
+* [ ] 编写 API AI 配置与请求逻辑。
 * [ ] 编写 README、示例题目（至少 3 道题用于测试）。
 * [ ] 进行端到端测试（保存触发、批量 check、AI 辅助）。
 * [ ] 完成清理脚本、日志轮转、并编写部署说明。

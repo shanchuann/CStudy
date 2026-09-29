@@ -10,20 +10,44 @@ jobs:
   test-windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v3
-      - name: PowerShell 脚本测试
-        run: pwsh scripts/cstudy.ps1
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Python core tests
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
+      - name: CLI smoke tests
+        run: |
+          .\cstudy.ps1 validate --compile
+          .\cstudy.ps1 list
+          .\cstudy.ps1 doctor --json
 
   test-linux:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - name: Bash 脚本测试
-        run: bash scripts/cstudy.sh
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Python core tests
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
+      - name: CLI smoke tests
+        run: |
+          bash ./cstudy.sh validate --compile
+          bash ./cstudy.sh list
+          bash ./cstudy.sh doctor --json
 
   test-macos:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v3
-      - name: Bash 脚本测试
-        run: bash scripts/cstudy.sh
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Python core tests
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
+      - name: CLI smoke tests
+        run: |
+          bash ./cstudy.sh validate --compile
+          bash ./cstudy.sh list
+          bash ./cstudy.sh doctor --json

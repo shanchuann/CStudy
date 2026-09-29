@@ -1,0 +1,4 @@
+INPUT:
+13
+OUTPUT:
+3

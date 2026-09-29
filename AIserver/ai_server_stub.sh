@@ -1,5 +1,5 @@
 #!/bin/bash
-# AIserver 通信模拟脚本
-# 实际部署时可替换为 ollama 或本地模型服务
+# AIserver API 配置提示脚本
+# 实际请求由根目录 cstudy.py 通过 OpenAI-compatible API 发起
 
-echo "AIserver: 收到请求，返回建议（模拟）"
+echo "AIserver: set CSTUDY_API_KEY and CSTUDY_API_BASE before using cstudy ai"

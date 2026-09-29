@@ -1,0 +1,4 @@
+INPUT:
+ABC
+OUTPUT:
+198

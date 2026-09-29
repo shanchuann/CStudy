@@ -19,8 +19,8 @@ directories captured above]
 ## Technical Context
 
 **Language/Version**: PowerShell 5.1+（Windows），Bash 4.0+（Linux/macOS），所有脚本需兼容两者  
-**Primary Dependencies**: gcc（C编译器，MinGW/WSL/系统自带），ollama（AI辅助，选装），标准shell工具（find、ls、cat、echo等）  
-**Storage**: 文件系统（Exercises/、Detection/logs/、AIserver/model/等目录）  
+**Primary Dependencies**: gcc（C编译器，MinGW/WSL/系统自带），OpenAI-compatible API（AI辅助，选装），标准shell工具（find、ls、cat、echo等）  
+**Storage**: 文件系统（Exercises/、.cstudy/state.json、.cstudy/logs/；AI 为可选远程 API）  
 **Testing**: 脚本自带单元测试（PowerShell/Bash），CI平台（GitHub Actions）自动运行跨平台测试  
 **Target Platform**: Windows 10+，Linux（主流发行版），macOS 10.15+  
 **Project Type**: 单体脚本项目，目录结构分明，支持后续扩展  
@@ -58,24 +58,12 @@ specs/001-cstudy-interactive-c/
 ### Source Code (repository root)
 
 ```
-scripts/
-├── cstudy.ps1           # Windows入口脚本
-├── cstudy.sh            # Linux/macOS入口脚本
-└── common/              # 共享逻辑模块（如判题、练习检测、AI接口）
-
-Exercises/               # 练习题目录，支持动态添加
-Detection/
-├── logs/                # 判题日志
-└── temp/                # 判题临时文件
-
-AIserver/
-├── model/               # AI模型存储
-└── logs/                # AI操作日志
-
-
-├── unit/                # 单元测试
-├── integration/         # 集成测试
-└── fixtures/            # 测试数据与示例练习
+cstudy.py                # 共享 CLI、发现、判题、状态和 API AI
+cstudy.ps1 / cstudy.sh   # Windows / Unix 转发入口
+scripts/                 # 兼容入口与书籍资源处理工具
+Exercises/               # 动态发现的章节练习
+.cstudy/                 # 本地状态、日志和临时运行数据（被忽略）
+tests/                   # Python 单元测试与跨平台集成测试
 ```
 
 **Structure Decision**: 采用单体脚本项目结构，所有核心功能按模块分目录，练习题支持后续动态添加，脚本自动检测并录入。

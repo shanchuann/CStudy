@@ -1,0 +1,4 @@
+# Local CStudy progress and Python caches
+.cstudy/
+__pycache__/
+*.py[cod]

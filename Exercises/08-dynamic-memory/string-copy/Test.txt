@@ -1,0 +1,4 @@
+INPUT:
+cstudy
+OUTPUT:
+cstudy

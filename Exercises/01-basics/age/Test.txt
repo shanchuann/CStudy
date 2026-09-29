@@ -1,0 +1,9 @@
+INPUT:
+18
+OUTPUT:
+adult
+---
+INPUT:
+17
+OUTPUT:
+minor

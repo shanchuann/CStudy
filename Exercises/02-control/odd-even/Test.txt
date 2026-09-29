@@ -1,0 +1,9 @@
+INPUT:
+4
+OUTPUT:
+even
+---
+INPUT:
+-3
+OUTPUT:
+odd

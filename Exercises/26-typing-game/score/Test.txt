@@ -1,0 +1,4 @@
+INPUT:
+hello healo
+OUTPUT:
+4

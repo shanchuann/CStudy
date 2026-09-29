@@ -1,0 +1,4 @@
+INPUT:
+hello
+OUTPUT:
+olleh

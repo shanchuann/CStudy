@@ -1,0 +1,9 @@
+{
+  "auto_next": false,
+  "timeout_seconds": 2.0,
+  "total_timeout_seconds": 10.0,
+  "max_output_bytes": 1048576,
+  "ai_model": "gpt-4o-mini",
+  "ai_api_mode": "chat",
+  "ai_api_base": "https://api.openai.com/v1"
+}

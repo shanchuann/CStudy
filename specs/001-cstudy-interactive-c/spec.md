@@ -75,7 +75,7 @@ A student or instructor wants to manage which AI model is used for coding assist
 **Acceptance Scenarios**:
 
 1. **Given** a user executes the AI management command, **When** viewing options, **Then** they see commands to list, enable, disable, switch, and remove models
-2. **Given** AI is being enabled for the first time, **When** the system checks dependencies, **Then** it verifies ollama is installed and provides installation instructions if missing
+2. **Given** AI assistance is requested for the first time, **When** the system checks dependencies, **Then** it verifies the API key and endpoint configuration and provides setup instructions if missing
 3. **Given** selecting a model, **When** multiple models are recommended, **Then** the system displays model names with size requirements and descriptions
 4. **Given** downloading a model, **When** the download starts, **Then** progress is displayed and the model is stored in the designated directory
 5. **Given** switching models, **When** a new model is selected, **Then** the system prompts whether to remove the old model and updates configuration to use the new model
@@ -134,7 +134,7 @@ A student or instructor wants to manage which AI model is used for coding assist
 - **FR-022**: System MUST display a welcome banner when launched showing the application name and visual branding
 - **FR-023**: System MUST display a progress indicator showing completed exercises versus total exercises
 - **FR-024**: System MUST refresh the console display when switching between interface modes (clear and redraw)
-- **FR-025**: System MUST support commands: check (batch verify), list (show exercises), AI (manage AI service), help me (get AI assistance), quit (exit)
+- **FR-025**: System MUST support commands: check (batch verify), list (show exercises), ai (optional API assistance), watch, reset, quit (exit)
 - **FR-026**: System MUST open exercise files in an external editor (using environment variable EDITOR or default editor)
 - **FR-027**: System MUST prompt users for confirmation before advancing to the next exercise after completing one
 - **FR-028**: System MUST display compilation errors with source line numbers and error descriptions
@@ -147,7 +147,7 @@ A student or instructor wants to manage which AI model is used for coding assist
 - **FR-032**: System MUST detect whether AI service is enabled before processing help requests
 - **FR-033**: System MUST prompt users to enable AI service if not already enabled, guiding through model selection and download
 - **FR-034**: System MUST collect exercise context (description, current code, test cases) into a structured prompt for AI
-- **FR-035**: System MUST send AI prompts to a local AI model (using ollama for model management)
+- **FR-035**: System MUST send AI prompts to a configured OpenAI-compatible API
 - **FR-036**: System MUST support multiple AI models including default and alternative options for different hardware capabilities
 - **FR-037**: System MUST receive AI responses within 30 seconds or report timeout
 - **FR-038**: System MUST parse AI responses to extract error analysis, suggested code fixes, and explanations
@@ -155,7 +155,7 @@ A student or instructor wants to manage which AI model is used for coding assist
 - **FR-040**: System MUST provide an option for users to automatically apply AI-suggested code changes
 - **FR-041**: System MUST back up the current exercise file before applying AI suggestions
 - **FR-042**: System MUST provide AI management commands to list available models, download models, switch active model, and remove models
-- **FR-043**: System MUST verify that ollama is installed before attempting to use AI features
+- **FR-043**: System MUST verify that the API key and endpoint are configured before attempting to use AI features
 - **FR-044**: System MUST store AI configuration and active model information in a persistent state file
 - **FR-045**: System MUST log all AI operations including prompts sent, responses received, and errors encountered
 

@@ -1,0 +1,4 @@
+ARGS: hello world
+INPUT:
+OUTPUT:
+hello world

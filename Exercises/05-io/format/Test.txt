@@ -1,0 +1,4 @@
+INPUT:
+Lin 95
+OUTPUT:
+Lin: 95
