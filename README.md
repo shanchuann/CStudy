@@ -23,7 +23,7 @@ cstudy reset
 cstudy ai 00-introduction/compile-run --hint-only
 ```
 
-直接运行 `cstudy.ps1`、`cstudy.sh` 或 `cstudy.py` 会进入实时学习界面，自动选择第一个未完成题目并执行判题。保存 `Ques.c` 后自动重判，当前源码路径带有终端可点击链接。界面按键为：`n` 下一题（当前题通过后）、`r` 重跑、`h` 提示、`l` 题目列表、`x` 重置当前题、`q` 退出。列表中可用 `j/k` 或方向键移动，`d/p` 筛选已完成/未完成，`s` 搜索，回车切换当前题目。
+直接运行 `cstudy.ps1`、`cstudy.sh` 或 `cstudy.py` 会进入实时学习界面，自动选择第一个未完成题目并执行判题。保存 `Ques.c` 后自动重判，当前源码路径带有终端可点击链接。界面按键为：`n` 下一题（当前题通过后）、`r` 重跑、`h` 提示、`a` 请求 AI 提示、`l` 题目列表、`x` 重置当前题、`q` 退出。列表中可用 `j/k` 或方向键移动，`d/p` 筛选已完成/未完成，`s` 搜索，回车切换当前题目。
 
 编辑器可通过 `--edit-cmd "code"`、`CSTUDY_EDIT_CMD`、`EDITOR` 或 `VISUAL` 配置；不希望自动打开编辑器时使用 `cstudy watch --no-editor`。
 
@@ -89,6 +89,28 @@ CStudy/
    - `CSTUDY_API_KEY` 或 `OPENAI_API_KEY`
    - 可选 `CSTUDY_API_BASE`（默认 `https://api.openai.com/v1`）
    - 可选 `CSTUDY_AI_MODEL`（默认 `gpt-4o-mini`）
+
+### AI 入口
+
+在实时学习界面按 `a`，CStudy 会把当前题目的描述、源码、测试用例和最近一次判题结果发送给配置的 OpenAI-compatible API，并显示针对当前题目的提示。按 Enter 返回学习界面。
+
+也可以直接从命令行调用：
+
+```powershell
+# 当前题目给出提示，不修改 Ques.c
+.\cstudy.ps1 ai 01-basics/hello --hint-only
+
+# 获取错误分析和参考实现建议
+.\cstudy.ps1 ai 01-basics/hello
+```
+
+Linux/macOS 使用：
+
+```bash
+./cstudy.sh ai 01-basics/hello --hint-only
+```
+
+AI 是可选功能；未配置 API key 时，判题、watch、list 等核心功能仍然可用。
 
 ## 命令说明
 

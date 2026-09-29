@@ -294,7 +294,10 @@ def run_case(binary: Path, case: TestCase, timeout: float, max_output: int, cwd:
             kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
         else:
             kwargs["start_new_session"] = True
-            if resource is not None:
+            # resource.preexec_fn is unreliable on macOS (and can fail after
+            # fork in hosted CI). Keep process groups everywhere, and apply
+            # POSIX limits only on Linux where the runner is stable.
+            if resource is not None and sys.platform.startswith("linux"):
                 cpu_limit = max(1, int(timeout) + 1)
                 def apply_limits() -> None:
                     resource.setrlimit(resource.RLIMIT_CPU, (cpu_limit, cpu_limit))
@@ -302,7 +305,11 @@ def run_case(binary: Path, case: TestCase, timeout: float, max_output: int, cwd:
                     if address_limit is not None:
                         resource.setrlimit(address_limit, (512 * 1024 * 1024, 512 * 1024 * 1024))
                 kwargs["preexec_fn"] = apply_limits
-        process = subprocess.Popen([str(binary), *(case.args or [])], **kwargs)
+        try:
+            process = subprocess.Popen([str(binary), *(case.args or [])], **kwargs)
+        except (OSError, subprocess.SubprocessError) as exc:
+            return CaseResult(False, case.input, case.expected, "", str(exc),
+                              int((time.monotonic() - started) * 1000), -1, "runtime_error")
         assert process.stdin is not None
         process.stdin.write(case.input + ("\n" if case.input else ""))
         process.stdin.close()
@@ -369,7 +376,11 @@ def grade(directory: Path, timeout: float, total_timeout: float, max_output: int
         binary = temp / ("solution.exe" if os.name == "nt" else "solution")
         command = [cc, "-std=c11", "-Wall", "-Wextra", "-O2", *compile_sources, "-o", str(binary)]
         try:
-            compiled = subprocess.run(command, cwd=temp, text=True, capture_output=True, timeout=total_timeout)
+            # Small test budgets are intended for the exercise process. On
+            # hosted Windows runners gcc startup can exceed two seconds even
+            # for a tiny file, so give compilation a bounded platform grace.
+            compile_timeout = max(total_timeout, 10.0) if os.name == "nt" else total_timeout
+            compiled = subprocess.run(command, cwd=temp, text=True, capture_output=True, timeout=compile_timeout)
         except subprocess.TimeoutExpired as exc:
             result.update(status="compile_timeout", error="compiler timeout")
             result["compile"] = {"command": command, "return_code": -signal.SIGTERM,
@@ -381,8 +392,9 @@ def grade(directory: Path, timeout: float, total_timeout: float, max_output: int
         if compiled.returncode != 0:
             result["status"] = "compile_error"
         else:
+            run_started = time.monotonic()
             for case in cases:
-                remaining = total_timeout - (time.monotonic() - started)
+                remaining = total_timeout - (time.monotonic() - run_started)
                 if remaining <= 0:
                     result["cases"].append(asdict(CaseResult(False, case.input, case.expected, "", "", 0,
                                                               -signal.SIGTERM, "total_timeout")))
@@ -830,7 +842,7 @@ def render_watch_screen(target: Path, result: Optional[dict], hint: bool = False
                 print(paint("Example input/output:", "yellow"))
                 print(f"input: {cases[0].input or '<empty>'}")
                 print(f"expected: {cases[0].expected or '<empty>'}")
-    print("\n[n] next  [r] run  [h] hint  [l] list  [x] reset  [q] quit")
+    print("\n[n] next  [r] run  [h] hint  [a] AI  [l] list  [x] reset  [q] quit")
 
 
 def list_tui() -> Optional[Path]:
@@ -909,6 +921,11 @@ def watch_tui(args: argparse.Namespace, target: Path) -> int:
                     if move_next(): dirty = True
                 elif key == "h":
                     hint = not hint; dirty = True
+                elif key == "a":
+                    clear_screen()
+                    command_ai(argparse.Namespace(exercise=exercise_id(target), hint_only=True, ai_timeout=30.0))
+                    read_line("\nPress Enter to return...")
+                    dirty = True
                 elif key == "l":
                     chosen = list_tui()
                     if chosen:
