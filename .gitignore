@@ -2,3 +2,6 @@
 .cstudy/
 __pycache__/
 *.py[cod]
+**/done.flag
+output/
+wsl.localhost/
