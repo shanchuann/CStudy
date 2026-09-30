@@ -222,7 +222,7 @@ def configure_ai() -> bool:
         return False
     base_url = read_line(f"API base [{base_url}]: ") or base_url
     model = read_line(f"Model [{model}]: ") or model
-    requested_mode = read_line(f"API mode (chat/responses) [{mode}]: ").lower() or mode
+    requested_mode = (read_line(f"API mode (chat/responses) [{mode}]: ").lower() or mode) if choice == "4" else mode
     if not base_url.startswith(("http://", "https://")):
         print("AI setup failed: API base must start with http:// or https://.", file=sys.stderr)
         return False
@@ -1201,7 +1201,7 @@ def command_ai(args: argparse.Namespace) -> int:
         payload_value = {"model": model, "input": [{"role": "user", "content": [{"type": "input_text", "text": prompt}]}]}
         endpoint = "/responses"
     else:
-        payload_value = {"model": model, "messages": [{"role": "user", "content": prompt}], "temperature": 0.2}
+        payload_value = {"model": model, "messages": [{"role": "user", "content": prompt}]}
         endpoint = "/chat/completions"
     payload = json.dumps(payload_value, ensure_ascii=False).encode("utf-8")
     try:

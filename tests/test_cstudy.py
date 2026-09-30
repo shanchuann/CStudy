@@ -251,7 +251,7 @@ class TestApiAssistant(unittest.TestCase):
             old_values = (cstudy.STATE_DIR, cstudy.CONFIG_FILE)
             cstudy.STATE_DIR = Path(temp) / ".cstudy"
             cstudy.CONFIG_FILE = cstudy.STATE_DIR / "config.json"
-            answers = iter(["2", "", "", ""])
+            answers = iter(["2", "", ""])
             try:
                 with mock.patch.object(cstudy.sys.stdin, "isatty", return_value=True), \
                      mock.patch.object(cstudy.sys.stdout, "isatty", return_value=True), \
@@ -264,6 +264,7 @@ class TestApiAssistant(unittest.TestCase):
         self.assertEqual(saved["ai_provider"], "DeepSeek")
         self.assertEqual(saved["ai_api_base"], "https://api.deepseek.com")
         self.assertEqual(saved["ai_model"], "deepseek-flash")
+        self.assertEqual(saved["ai_api_mode"], "chat")
         self.assertEqual(saved["ai_api_key"], "secret-key")
 
     def test_deepseek_responses_mode_is_actionable(self):
