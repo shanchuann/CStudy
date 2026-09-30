@@ -193,7 +193,7 @@ def save_settings(value: dict) -> None:
 def ai_configuration() -> dict[str, str]:
     cfg = settings()
     return {
-        "api_key": os.environ.get("CSTUDY_API_KEY") or os.environ.get("OPENAI_API_KEY") or str(cfg.get("ai_api_key", "")),
+        "api_key": os.environ.get("CSTUDY_API_KEY") or str(cfg.get("ai_api_key", "")) or os.environ.get("OPENAI_API_KEY", ""),
         "api_base": os.environ.get("CSTUDY_API_BASE") or str(cfg.get("ai_api_base", "https://api.openai.com/v1")),
         "model": os.environ.get("CSTUDY_AI_MODEL") or str(cfg.get("ai_model", "gpt-4o-mini")),
         "mode": (os.environ.get("CSTUDY_API_MODE") or str(cfg.get("ai_api_mode", "chat"))).lower(),

@@ -123,7 +123,7 @@ Linux/macOS 使用：
 ./cstudy.sh ai 01-basics/hello --hint-only
 ```
 
-环境变量优先于本地配置，适合 CI、临时切换服务或不落盘保存密钥：
+`CSTUDY_*` 环境变量优先于本地配置，适合 CI、临时切换服务或不落盘保存密钥：
 
 ```powershell
 # PowerShell：DeepSeek 示例
@@ -141,7 +141,7 @@ export CSTUDY_AI_MODEL="glm-4-flash"
 ./cstudy.sh ai 01-basics/hello --hint-only
 ```
 
-还可为支持该接口的服务设置 `CSTUDY_API_MODE=responses`；默认值 `chat` 使用兼容性更广的 `/chat/completions`。DeepSeek 当前的 OpenAI-compatible 接口应使用 `chat`，不要配置为 `responses`；`https://api.deepseek.com/anthropic` 是 Anthropic SDK 的兼容入口，不适用于 CStudy 当前的 OpenAI-compatible 请求格式。`CSTUDY_API_BASE` 应填写版本根地址，不要包含 `/chat/completions` 或 `/responses`。`OPENAI_API_KEY` 仍作为 API key 的兼容变量。未配置 AI 不影响判题、watch、list 等核心功能。
+还可为支持该接口的服务设置 `CSTUDY_API_MODE=responses`；默认值 `chat` 使用兼容性更广的 `/chat/completions`。DeepSeek 当前的 OpenAI-compatible 接口应使用 `chat`，不要配置为 `responses`；`https://api.deepseek.com/anthropic` 是 Anthropic SDK 的兼容入口，不适用于 CStudy 当前的 OpenAI-compatible 请求格式。`CSTUDY_API_BASE` 应填写版本根地址，不要包含 `/chat/completions` 或 `/responses`。密钥优先级为 `CSTUDY_API_KEY`、本地 AI 配置、`OPENAI_API_KEY`；后者仅作为未配置服务时的兼容兜底。未配置 AI 不影响判题、watch、list 等核心功能。
 
 ## 命令说明
 

@@ -232,6 +232,19 @@ class TestGrading(unittest.TestCase):
 
 
 class TestApiAssistant(unittest.TestCase):
+    def test_saved_provider_key_precedes_openai_fallback(self):
+        with tempfile.TemporaryDirectory() as temp:
+            old_config = cstudy.CONFIG_FILE; old = dict(os.environ)
+            cstudy.CONFIG_FILE = Path(temp) / "config.json"
+            cstudy.CONFIG_FILE.write_text(json.dumps({"ai_api_key": "provider-key"}), encoding="utf-8")
+            try:
+                os.environ.pop("CSTUDY_API_KEY", None)
+                os.environ["OPENAI_API_KEY"] = "fallback-key"
+                self.assertEqual(cstudy.ai_configuration()["api_key"], "provider-key")
+            finally:
+                cstudy.CONFIG_FILE = old_config
+                os.environ.clear(); os.environ.update(old)
+
     def test_missing_api_key_is_actionable(self):
         old = dict(os.environ)
         with tempfile.TemporaryDirectory() as temp:
