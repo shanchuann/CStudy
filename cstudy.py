@@ -13,8 +13,10 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import platform
+import queue
 import contextlib
 import select
 import textwrap
@@ -37,6 +39,13 @@ except ImportError:  # Windows
     termios = None
     tty = None
 
+# Terminal presentation (animation and Markdown rendering) lives in a sibling
+# module so this file stays focused on the learning workflow.
+_ROOT_PATH = str(Path(__file__).resolve().parent)
+if _ROOT_PATH not in sys.path:
+    sys.path.insert(0, _ROOT_PATH)
+import console_ux
+
 ROOT = Path(__file__).resolve().parent
 EXERCISES = ROOT / "Exercises"
 CURRICULUM = ROOT / "book" / "curriculum.json"
@@ -45,7 +54,7 @@ STATE_DIR = ROOT / ".cstudy"
 STATE_FILE = STATE_DIR / "state.json"
 CONFIG_FILE = STATE_DIR / "config.json"
 LOG_DIR = STATE_DIR / "logs"
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 EXIT_OK, EXIT_FAILED, EXIT_USAGE = 0, 1, 2
 _ALTERNATE_SCREEN = False
 COMPLETION_MARKERS = ("// Done", "//DONE", "// I AM NOT DONE")
@@ -58,9 +67,8 @@ AI_PROVIDERS = {
 
 
 def paint(value: str, colour: str) -> str:
-    if os.environ.get("NO_COLOR") or not sys.stdout.isatty():
-        return value
-    return ANSI.get(colour, "") + value + ANSI["reset"]
+    """Colourise one token; delegates so the CLI has a single colour table."""
+    return console_ux.paint(value, colour)
 
 
 @dataclass
@@ -791,6 +799,14 @@ def open_editor(target: Path, args: argparse.Namespace) -> bool:
     except (OSError, ValueError): return False
 
 
+def interactive_terminal() -> bool:
+    """True when both standard streams are attached to a terminal."""
+    try:
+        return bool(sys.stdin.isatty() and sys.stdout.isatty())
+    except (AttributeError, ValueError):
+        return False
+
+
 @contextlib.contextmanager
 def raw_terminal():
     if os.name == "nt" or termios is None or tty is None or not sys.stdin.isatty():
@@ -822,14 +838,16 @@ def read_key(timeout: float = 0.1) -> Optional[str]:
                 code = msvcrt.getwch()
             except (OSError, ValueError):
                 return None
-            return {"H": "UP", "P": "DOWN", "G": "HOME", "O": "END"}.get(code, "")
+            return {"H": "UP", "P": "DOWN", "K": "LEFT", "M": "RIGHT",
+                    "G": "HOME", "O": "END", "S": "DELETE"}.get(code, "")
         if key == "\x1b":
             # Windows Terminal and some IDE consoles report ANSI arrows.
             sequence = ""
             deadline = time.monotonic() + 0.03
             while msvcrt.kbhit() and time.monotonic() < deadline:
                 sequence += msvcrt.getwch()
-            return {"[A": "UP", "[B": "DOWN", "[H": "HOME", "[F": "END"}.get(sequence, "ESC")
+            return {"[A": "UP", "[B": "DOWN", "[C": "RIGHT", "[D": "LEFT",
+                    "[H": "HOME", "[F": "END", "[3~": "DELETE"}.get(sequence, "ESC")
         return "CTRL-C" if key == "\x03" else key
     if not sys.stdin.isatty(): time.sleep(timeout); return None
     ready, _, _ = select.select([sys.stdin], [], [], timeout)
@@ -838,11 +856,12 @@ def read_key(timeout: float = 0.1) -> Optional[str]:
     if key == "\x03": return "CTRL-C"
     if key == "\x1b":
         sequence = ""
-        for _ in range(2):
+        for _ in range(3):
             more, _, _ = select.select([sys.stdin], [], [], 0.01)
             if not more: break
             sequence += sys.stdin.read(1)
-        return {"[A": "UP", "[B": "DOWN", "[H": "HOME", "[F": "END"}.get(sequence, "ESC")
+        return {"[A": "UP", "[B": "DOWN", "[C": "RIGHT", "[D": "LEFT",
+                "[H": "HOME", "[F": "END", "[3~": "DELETE"}.get(sequence, "ESC")
     return key
 
 
@@ -902,6 +921,28 @@ def alternate_screen():
         _ALTERNATE_SCREEN = False
 
 
+def leave_alternate_screen() -> None:
+    """Return to the normal buffer, which is the only one with scrollback.
+
+    The alternate screen is a private buffer that keeps no history, so a
+    transcript printed there cannot be scrolled back through.
+    """
+    global _ALTERNATE_SCREEN
+    if not _ALTERNATE_SCREEN:
+        return
+    print("\x1b[?25h\x1b[?1049l", end="", flush=True)
+    _ALTERNATE_SCREEN = False
+
+
+def enter_alternate_screen() -> None:
+    """Re-enter the private buffer used by the interactive watch screen."""
+    global _ALTERNATE_SCREEN
+    if _ALTERNATE_SCREEN:
+        return
+    print("\x1b[?1049h\x1b[?25l\x1b[2J\x1b[H", end="", flush=True)
+    _ALTERNATE_SCREEN = True
+
+
 def render_watch_screen(target: Path, result: Optional[dict], hint: bool = False) -> None:
     state = current_state(); exercises = discover()
     width = max(18, min(48, shutil.get_terminal_size((80, 24)).columns - 30))
@@ -914,7 +955,7 @@ def render_watch_screen(target: Path, result: Optional[dict], hint: bool = False
     description = target / "description.md"
     if description.exists():
         print(paint("\nDescription:", "cyan"))
-        print(read_text(description).rstrip())
+        print(console_ux.render_markdown(read_text(description), width=console_ux.terminal_width()))
     if result:
         status = result.get("status", "pending")
         label, colour = ("PASS", "green") if status == "passed" else (("WARNING", "yellow") if status == "incomplete_marker" else ("ERROR", "red"))
@@ -938,7 +979,7 @@ def render_watch_screen(target: Path, result: Optional[dict], hint: bool = False
     if hint:
         print(paint("\nHint:", "yellow"))
         if description.exists():
-            print(read_text(description).rstrip())
+            print(console_ux.render_markdown(read_text(description), width=console_ux.terminal_width()))
         _, test_file = exercise_files(target)
         if test_file:
             cases = parse_tests(test_file)
@@ -946,7 +987,7 @@ def render_watch_screen(target: Path, result: Optional[dict], hint: bool = False
                 print(paint("Example input/output:", "yellow"))
                 print(f"input: {cases[0].input or '<empty>'}")
                 print(f"expected: {cases[0].expected or '<empty>'}")
-    print("\n[n] next  [r] run  [h] hint  [a] AI  [l] list  [x] reset  [q] quit")
+    print("\n[n] next  [r] run  [h] hint  [a] AI chat  [l] list  [x] reset  [q] quit")
 
 
 def list_tui() -> Optional[Path]:
@@ -1026,9 +1067,14 @@ def watch_tui(args: argparse.Namespace, target: Path) -> int:
                 elif key == "h":
                     hint = not hint; dirty = True
                 elif key == "a":
-                    clear_screen()
-                    command_ai(argparse.Namespace(exercise=exercise_id(target), hint_only=True, ai_timeout=30.0))
-                    read_line("\nPress Enter to return...")
+                    # The alternate screen keeps no history, so run the chat in
+                    # the normal buffer where the transcript can be scrolled back.
+                    leave_alternate_screen()
+                    code = chat_session(target, timeout=float(getattr(args, "ai_timeout", 60.0)),
+                                        opening=HINT_REQUEST)
+                    if code != EXIT_OK:
+                        read_line("\nPress Enter to return...")
+                    enter_alternate_screen()
                     dirty = True
                 elif key == "l":
                     chosen = list_tui()
@@ -1177,6 +1223,229 @@ def api_error_message(raw: bytes) -> str:
         return text[:1000]
 
 
+class AiRequestError(Exception):
+    """One failed AI request, carrying ready-to-print error lines."""
+
+    def __init__(self, lines: list[str], code: int = 4) -> None:
+        super().__init__(lines[0] if lines else "AI request failed")
+        self.lines = lines
+        self.code = code
+
+
+def build_ai_payload(model: str, api_mode: str, messages: list[dict]) -> dict:
+    """Translate a role/content conversation into the provider's request shape."""
+    if api_mode == "responses":
+        return {"model": model, "input": [
+            {"role": message["role"],
+             "content": [{"type": "output_text" if message["role"] == "assistant" else "input_text",
+                          "text": message["content"]}]}
+            for message in messages]}
+    return {"model": model, "messages": messages}
+
+
+def ai_endpoint(api_mode: str) -> str:
+    return "/responses" if api_mode == "responses" else "/chat/completions"
+
+
+class AiCancelled(Exception):
+    """Raised when the user interrupts an in-flight request."""
+
+
+def extract_reasoning(body: dict, api_mode: str) -> str:
+    """Reasoning text that some providers return next to the answer."""
+    if api_mode == "responses":
+        return ""
+    try:
+        message = body["choices"][0]["message"]
+    except (KeyError, IndexError, TypeError):
+        return ""
+    for key in ("reasoning_content", "reasoning"):
+        value = message.get(key)
+        if isinstance(value, str):
+            return value
+    return ""
+
+
+def read_ai_stream(response, api_mode: str, on_delta=None, on_reasoning=None, cancel=None) -> str:
+    """Read an SSE event stream, tolerating a gateway that ignores stream=true.
+
+    Reasoning deltas (DeepSeek reasoning_content, Responses reasoning summaries)
+    go to on_reasoning so the caller can show the thinking process.
+    """
+    def interrupted() -> None:
+        if cancel is not None and cancel.is_set():
+            raise AiCancelled()
+
+    first = ""
+    for raw in response:
+        interrupted()
+        candidate = raw.decode("utf-8", "replace").strip()
+        if candidate:
+            first = candidate
+            break
+    if not first:
+        raise AiRequestError(["AI API returned an unsupported response format: empty response content"])
+    if not first.startswith("data:"):
+        # The endpoint answered with one JSON document instead of an event stream.
+        body = json.loads((first + "\n" + response.read().decode("utf-8", "replace")).strip())
+        reasoning = extract_reasoning(body, api_mode)
+        if reasoning and on_reasoning:
+            on_reasoning(reasoning)
+        content = extract_ai_content(body, api_mode)
+        if not content:
+            raise AiRequestError(["AI API returned an unsupported response format: empty response content"])
+        if on_delta:
+            on_delta(content)
+        return content
+    collected: list[str] = []
+
+    def consume(line: str) -> bool:
+        line = line.strip()
+        if not line or line.startswith(":") or not line.startswith("data:"):
+            return False
+        data = line[5:].strip()
+        if data == "[DONE]":
+            return True
+        try:
+            chunk = json.loads(data)
+        except json.JSONDecodeError:
+            return False
+        kind = chunk.get("type")
+        if kind == "response.reasoning_summary_text.delta":
+            piece = chunk.get("delta")
+            if piece and on_reasoning:
+                on_reasoning(piece)
+            return False
+        if kind == "response.output_text.delta":
+            piece = chunk.get("delta")
+            if piece:
+                collected.append(piece)
+                if on_delta:
+                    on_delta(piece)
+            return False
+        for choice in chunk.get("choices", []):
+            delta = choice.get("delta") or {}
+            thought = delta.get("reasoning_content") or delta.get("reasoning")
+            if thought and on_reasoning:
+                on_reasoning(thought)
+            piece = delta.get("content")
+            if piece:
+                collected.append(piece)
+                if on_delta:
+                    on_delta(piece)
+        return False
+
+    if consume(first):
+        return "".join(collected)
+    for raw in response:
+        interrupted()
+        if consume(raw.decode("utf-8", "replace")):
+            break
+    content = "".join(collected)
+    if not content:
+        raise AiRequestError(["AI API returned an unsupported response format: empty response content"])
+    return content
+
+
+def ai_request_once(base_url: str, api_key: str, model: str, api_mode: str, messages: list[dict],
+                    timeout: float, stream: bool, on_delta, on_reasoning, cancel, on_open) -> str:
+    endpoint = ai_endpoint(api_mode)
+    payload_value = build_ai_payload(model, api_mode, messages)
+    if stream:
+        payload_value["stream"] = True
+    payload = json.dumps(payload_value, ensure_ascii=False).encode("utf-8")
+    url = base_url + endpoint
+    headers = {"Authorization": "Bearer " + api_key, "Content-Type": "application/json"}
+    if stream:
+        headers["Accept"] = "text/event-stream"
+    try:
+        request = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            if on_open:
+                on_open(response)
+            if stream:
+                return read_ai_stream(response, api_mode, on_delta, on_reasoning, cancel)
+            body = json.loads(response.read().decode("utf-8"))
+            reasoning = extract_reasoning(body, api_mode)
+            if reasoning and on_reasoning:
+                on_reasoning(reasoning)
+            content = extract_ai_content(body, api_mode)
+            if not content:
+                raise KeyError("empty response content")
+            return content
+    except (AiRequestError, AiCancelled):
+        raise
+    except json.JSONDecodeError as exc:
+        raise AiRequestError([f"AI API returned invalid JSON: {exc}"]) from exc
+    except urllib.error.HTTPError as exc:
+        detail = api_error_message(exc.read())
+        lines = [f"AI API error: HTTP {exc.code} {exc.reason}"]
+        if detail:
+            lines.append(f"Service message: {detail}")
+        lines.append(f"Endpoint: {url}")
+        if exc.code in {401, 403}:
+            lines.append("Check the API key and whether it can access the selected model.")
+        elif exc.code == 404:
+            lines.append("Check CSTUDY_API_BASE, API mode, and the provider's compatible endpoint.")
+        elif exc.code == 429:
+            lines.append("The service rate limit or account quota was exceeded.")
+        raise AiRequestError(lines) from exc
+    except (urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
+        if cancel is not None and cancel.is_set():
+            raise AiCancelled() from exc
+        reason = getattr(exc, "reason", exc)
+        raise AiRequestError([f"AI API connection failed: {reason}", f"Endpoint: {url}",
+                              "Check the network or proxy, then retry."]) from exc
+    except (KeyError, IndexError, TypeError) as exc:
+        raise AiRequestError([f"AI API returned an unsupported response format: {exc}"]) from exc
+
+
+def ai_request(base_url: str, api_key: str, model: str, api_mode: str, messages: list[dict],
+               timeout: float, stream: bool = False, on_delta=None, on_reasoning=None,
+               cancel=None, on_open=None, retries: int = 0) -> str:
+    """Send one conversation turn and return the assistant text.
+
+    Raises AiRequestError with printable lines instead of leaking tracebacks, and
+    AiCancelled when cancel is set (interrupting a stream or closing it).
+    """
+    attempts = max(1, retries + 1)
+    for attempt in range(attempts):
+        try:
+            return ai_request_once(base_url, api_key, model, api_mode, messages, timeout,
+                                   stream, on_delta, on_reasoning, cancel, on_open)
+        except AiCancelled:
+            raise
+        except AiRequestError as exc:
+            transient = any("connection failed" in line for line in exc.lines)
+            if attempt + 1 < attempts and transient:
+                time.sleep(0.4)
+                continue
+            raise
+    raise AiRequestError(["AI API request failed"])
+
+
+def exercise_prompt(target: Path, hint_only: bool = False) -> str:
+    """Build the one-shot prompt used by the ai command and the chat opener."""
+    source, tests = exercise_files(target)
+    previous = current_state().get("exercises", {}).get(exercise_id(target), {}).get("last_result", {})
+    mode = ("Give hints and debugging questions without revealing the complete solution."
+            if hint_only else "Explain the error and provide a complete compilable reference solution, but do not modify files.")
+    return ("You are a C language learning assistant. " + mode + "\n"
+            "Exercise description:\n" + read_text(target / "description.md")[:5000] + "\n"
+            "Current code:\n" + read_text(source)[:10000] + "\n"
+            "Tests:\n" + read_text(tests)[:5000] + "\n"
+            "Latest grading result:\n" + json.dumps(previous, ensure_ascii=False)[:5000])
+
+
+def print_ai_answer(content: str, raw: bool = False) -> None:
+    """Render the answer as Markdown on a terminal; keep redirected output verbatim."""
+    text = content.rstrip()
+    if raw or not sys.stdout.isatty():
+        print(text)
+        return
+    print(console_ux.render_markdown(text, width=console_ux.terminal_width()))
+
+
 def command_ai(args: argparse.Namespace) -> int:
     if getattr(args, "setup", False):
         return EXIT_OK if configure_ai() else 4
@@ -1207,56 +1476,397 @@ def command_ai(args: argparse.Namespace) -> int:
     if source is None or tests is None:
         return EXIT_USAGE
     previous = current_state().get("exercises", {}).get(exercise_id(target), {}).get("last_result", {})
-    mode = ("Give hints and debugging questions without revealing the complete solution."
-            if args.hint_only else "Explain the error and provide a complete compilable reference solution, but do not modify files.")
-    prompt = ("You are a C language learning assistant. " + mode + "\n"
-              "Exercise description:\n" + read_text(target / "description.md")[:5000] + "\n"
-              "Current code:\n" + read_text(source)[:10000] + "\n"
-              "Tests:\n" + read_text(tests)[:5000] + "\n"
-              "Latest grading result:\n" + json.dumps(previous, ensure_ascii=False)[:5000])
-    api_mode = ai_cfg["mode"]
-    if api_mode == "responses":
-        payload_value = {"model": model, "input": [{"role": "user", "content": [{"type": "input_text", "text": prompt}]}]}
-        endpoint = "/responses"
-    else:
-        payload_value = {"model": model, "messages": [{"role": "user", "content": prompt}]}
-        endpoint = "/chat/completions"
-    payload = json.dumps(payload_value, ensure_ascii=False).encode("utf-8")
+    prompt = exercise_prompt(target, getattr(args, "hint_only", False))
+    timeout = getattr(args, "ai_timeout", 30.0)
     try:
-        request = urllib.request.Request(base_url + endpoint, data=payload,
-                                         headers={"Authorization": "Bearer " + api_key,
-                                                  "Content-Type": "application/json"}, method="POST")
-        with urllib.request.urlopen(request, timeout=args.ai_timeout) as response:
-            body = json.loads(response.read().decode("utf-8"))
-        content = extract_ai_content(body, api_mode)
-        if not content:
-            raise KeyError("empty response content")
-    except urllib.error.HTTPError as exc:
-        detail = api_error_message(exc.read())
-        print(f"AI API error: HTTP {exc.code} {exc.reason}", file=sys.stderr)
-        if detail:
-            print(f"Service message: {detail}", file=sys.stderr)
-        print(f"Endpoint: {base_url + endpoint}", file=sys.stderr)
-        if exc.code in {401, 403}:
-            print("Check the API key and whether it can access the selected model.", file=sys.stderr)
-        elif exc.code == 404:
-            print("Check CSTUDY_API_BASE, API mode, and the provider's compatible endpoint.", file=sys.stderr)
-        elif exc.code == 429:
-            print("The service rate limit or account quota was exceeded.", file=sys.stderr)
-        return 4
-    except (urllib.error.URLError, TimeoutError, ValueError) as exc:
-        reason = getattr(exc, "reason", exc)
-        print(f"AI API connection failed: {reason}", file=sys.stderr)
-        print(f"Endpoint: {base_url + endpoint}", file=sys.stderr)
-        return 4
-    except json.JSONDecodeError as exc:
-        print(f"AI API returned invalid JSON: {exc}", file=sys.stderr)
-        return 4
-    except (KeyError, IndexError, TypeError) as exc:
-        print(f"AI API returned an unsupported response format: {exc}", file=sys.stderr)
-        return 4
-    print(content.rstrip())
+        with console_ux.Status("Requesting AI") as status:
+            content = ai_request(base_url, api_key, model, ai_cfg["mode"],
+                                 [{"role": "user", "content": prompt}], timeout)
+            status.stop(paint("✓ Answer ready", "green"))
+    except AiRequestError as exc:
+        for line in exc.lines:
+            print(line, file=sys.stderr)
+        return exc.code
+    print_ai_answer(content, raw=getattr(args, "raw", False))
     return EXIT_OK
+
+
+CHAT_COMMANDS = [
+    ("/help", "show this help", False),
+    ("/hint", "ask for a hint about the current exercise", False),
+    ("/code", "reload Ques.c and the latest grading result", False),
+    ("/clear", "forget the conversation so far", False),
+    ("/model", "switch model (e.g. deepseek-reasoner)", True),
+    ("/thinking", "toggle the thinking transcript", False),
+    ("/raw", "toggle raw Markdown output", False),
+    ("/stream", "toggle token streaming", False),
+    ("/save", "write the last answer to a file", True),
+    ("/exit", "leave chat", False),
+]
+
+CHAT_HELP = ("Commands (type / for completion):\n"
+             + "\n".join("  %-10s %s" % (name, description) for name, description, _ in CHAT_COMMANDS)
+             + "\n\nWhile a request runs: Enter queues the message, Esc interrupts, Ctrl+C exits."
+             + "\nEditing: Left/Right, Home/End, Backspace, Delete, Ctrl+U/K/W."
+             + "\nUp/Down pick a command while typing /, otherwise they recall history.")
+
+CHAT_SYSTEM_PROMPT = """You are CStudy's C language tutor inside a terminal.
+Reply in the same language as the student's question.
+Prefer short Markdown: headings, bullet lists, and fenced C code blocks.
+Explain the cause before showing code, and never claim code was tested.
+Never modify files; the student applies the changes themselves."""
+
+HINT_REQUEST = ("Analyse my current code against the exercise description and tests, then give hints and "
+                "debugging questions without revealing the complete solution.")
+
+
+def chat_system_prompt(target: Path) -> str:
+    """Conversation context: the exercise, the student's code, and the last result."""
+    source, tests = exercise_files(target)
+    previous = current_state().get("exercises", {}).get(exercise_id(target), {}).get("last_result", {})
+    parts = [CHAT_SYSTEM_PROMPT,
+             f"Exercise: {exercise_id(target)} - {metadata(target)['title']}"]
+    description = target / "description.md"
+    if description.exists():
+        parts.append("Exercise description:\n" + read_text(description)[:5000])
+    if source is not None:
+        parts.append("Current Ques.c:\n" + read_text(source)[:10000])
+    if tests is not None:
+        parts.append("Tests:\n" + read_text(tests)[:5000])
+    if previous:
+        parts.append("Latest grading result:\n" + json.dumps(previous, ensure_ascii=False)[:3000])
+    return "\n\n".join(parts)
+
+
+def chat_status_line(elapsed: float, label: str, tokens: int, animate: bool = True) -> str:
+    """Compose the pinned status row: marker, phase, counters.
+
+    Streamed text belongs to the transcript, so this row never previews it: a
+    sliding preview reads as noise and forces a repaint on every token, which
+    fights the user's scrolling.
+    """
+    if not animate:
+        # The transcript is visibly moving on its own, so this row stays
+        # completely still: any repaint here would fight the user's scrolling
+        # while adding nothing they cannot already see.
+        return "%s %s" % (console_ux.paint("\u273b", "dim"), label)
+    marker = console_ux.paint(console_ux.spinner_frame(elapsed), "cyan")
+    return "%s %s %s" % (marker, label,
+                         console_ux.paint("(%.1fs \u00b7 %d tok)" % (elapsed, tokens), "dim"))
+
+
+def chat_session(target: Path, timeout: float = 60.0, stream: bool = True,
+                 raw: bool = False, opening: Optional[str] = None) -> int:
+    """Multi-turn console conversation; the input line stays live while work runs."""
+    ai_cfg = ai_configuration()
+    if not ai_cfg["api_key"]:
+        print_ai_setup_help()
+        if not (sys.stdin.isatty() and sys.stdout.isatty()) or not configure_ai():
+            return 4
+        ai_cfg = ai_configuration()
+    api_key = ai_cfg["api_key"]
+    base_url = ai_cfg["api_base"].rstrip("/")
+    model = ai_cfg["model"]
+    api_mode = ai_cfg["mode"]
+    if "api.deepseek.com" in base_url.lower() and api_mode == "responses":
+        print("DeepSeek configuration error: its OpenAI-compatible API uses chat mode.", file=sys.stderr)
+        print("Set ai_api_mode to chat, or run the AI setup and choose DeepSeek.", file=sys.stderr)
+        print(f"Expected endpoint: {base_url}/chat/completions", file=sys.stderr)
+        return 4
+
+    messages: list[dict] = [{"role": "system", "content": chat_system_prompt(target)}]
+    width = console_ux.terminal_width()
+    print(console_ux.paint(f"Chat: {exercise_id(target)} - {metadata(target)['title']}", "bold", "cyan"))
+    print(console_ux.paint("Enter queues while busy, Esc interrupts, /help lists commands.", "dim"))
+
+    interactive = interactive_terminal()
+    reader: Optional[console_ux.InputReader] = None
+    console: Any
+    if interactive:
+        reader = console_ux.InputReader(read_key, console_ux.LineEditor(commands=CHAT_COMMANDS))
+        console = console_ux.LiveConsole(hint="Enter queues \u00b7 Esc interrupts \u00b7 /help",
+                                         restore_hidden_cursor=_ALTERNATE_SCREEN)
+        reader.start()
+    else:
+        console = console_ux.PlainConsole()
+
+    work: "queue.Queue[tuple]" = queue.Queue()
+    pending: list[str] = [opening] if opening else []
+    active = False
+    cancel_event: Optional[threading.Event] = None
+    response_slot: dict = {}
+    started = 0.0
+    tokens = 0
+    answer = ""
+    reasoning = ""
+    last_answer = ""
+    stream_on = stream
+    show_thinking = True
+    thinking: Optional[console_ux.StreamingBlock] = None
+    last_transcript = 0.0
+    worker: Optional[threading.Thread] = None
+
+    def start_request(question: str) -> None:
+        nonlocal active, cancel_event, started, tokens, answer, reasoning, worker, thinking
+        thinking = None
+        messages.append({"role": "user", "content": question})
+        cancel_event = threading.Event()
+        started = time.monotonic()
+        tokens = 0
+        answer = ""
+        reasoning = ""
+        response_slot.clear()
+        active = True
+        console.note("Thinking...")
+        current_model, current_mode = model, api_mode
+
+        def on_delta(piece: str) -> None:
+            work.put(("delta", piece))
+
+        def on_reasoning(piece: str) -> None:
+            work.put(("reasoning", piece))
+
+        def on_open(response) -> None:
+            response_slot["response"] = response
+
+        def run() -> None:
+            try:
+                text = ai_request(base_url, api_key, current_model, current_mode, list(messages),
+                                  timeout, stream=stream_on, on_delta=on_delta,
+                                  on_reasoning=on_reasoning, cancel=cancel_event,
+                                  on_open=on_open, retries=1)
+                work.put(("done", text))
+            except AiCancelled:
+                work.put(("cancelled", ""))
+            except AiRequestError as exc:
+                work.put(("error", exc.lines))
+
+        worker = threading.Thread(target=run, daemon=True)
+        worker.start()
+
+    def interrupt() -> None:
+        if not active:
+            # nothing is running: stay quiet (Esc already closed any menu)
+            return
+        if cancel_event is not None:
+            cancel_event.set()
+        response = response_slot.get("response")
+        if response is not None:
+            try:
+                response.close()
+            except OSError:
+                pass
+        console.print_above(console_ux.paint("\u2717 interrupted", "yellow"))
+
+    def handle_command(line: str) -> Optional[str]:
+        nonlocal raw, stream_on, show_thinking, model, thinking
+        command, _, argument = line.partition(" ")
+        command = command.lower()
+        if command in {"/exit", "/quit", "/q"}:
+            return "exit"
+        if command in {"/help", "/?"}:
+            console.print_above(CHAT_HELP)
+        elif command == "/hint":
+            pending.append(HINT_REQUEST)
+        elif command == "/clear":
+            del messages[1:]
+            console.print_above("context cleared")
+        elif command in {"/code", "/result"}:
+            messages[0] = {"role": "system", "content": chat_system_prompt(target)}
+            console.print_above("context reloaded")
+        elif command == "/thinking":
+            show_thinking = not show_thinking
+            if not show_thinking and thinking is not None:
+                thinking.flush()
+                thinking = None
+            console.print_above("thinking streams into the transcript" if show_thinking
+                                else "thinking summary only")
+        elif command == "/model":
+            if argument.strip():
+                model = argument.strip()
+            console.print_above("model: " + model)
+        elif command == "/raw":
+            raw = not raw
+            console.print_above("raw Markdown" if raw else "rendered Markdown")
+        elif command == "/stream":
+            stream_on = not stream_on
+            console.print_above("streaming" if stream_on else "non-streaming")
+        elif command == "/save":
+            name = argument.strip() or "ai-answer.md"
+            try:
+                (ROOT / name).write_text(last_answer, encoding="utf-8")
+                console.print_above(f"saved to {name}")
+            except OSError as exc:
+                console.print_above(f"cannot save {name}: {exc}")
+        else:
+            console.print_above(f"unknown command: {command} (try /help)")
+        return None
+
+    def plain_events() -> list[tuple]:
+        try:
+            line = read_line(console_ux.paint("\n\u203a ", "cyan"))
+        except (EOFError, KeyboardInterrupt):
+            return [("exit", "")]
+        return [("submit", line)] if line else []
+
+    def drain_work() -> None:
+        """Apply everything the worker produced; safe to call before leaving."""
+        nonlocal active, last_answer, answer, tokens, reasoning, thinking, last_transcript
+        while True:
+            try:
+                kind, payload = work.get_nowait()
+            except queue.Empty:
+                break
+            if kind == "delta":
+                answer += payload
+                tokens += 1
+                if thinking is not None:
+                    # the answer starts: close the thinking block above it
+                    thinking.flush()
+                    thinking = None
+            elif kind == "reasoning":
+                reasoning += payload
+                tokens += 1
+                if show_thinking:
+                    if thinking is None:
+                        console.print_above(console_ux.paint("\u273b Thinking", "dim"))
+                        thinking = console_ux.StreamingBlock(console, style="dim", prefix="  ")
+                    thinking.feed(payload)
+                    last_transcript = time.monotonic()
+            elif kind == "done":
+                active = False
+                last_answer = payload
+                messages.append({"role": "assistant", "content": payload})
+                if thinking is not None:
+                    thinking.flush()
+                    thinking = None
+                if reasoning:
+                    elapsed = time.monotonic() - started
+                    hint = "/thinking hides it" if show_thinking else "/thinking to show"
+                    console.print_above(console_ux.paint(
+                        "\u273b thought for %.1fs (%d chars) \u00b7 %s"
+                        % (elapsed, len(reasoning), hint), "dim"))
+                console.print_above("")
+                if raw or not sys.stdout.isatty():
+                    console.print_above(payload.rstrip())
+                else:
+                    console.print_above(console_ux.render_markdown(payload.rstrip(), width=width))
+            elif kind == "cancelled":
+                active = False
+                messages.pop()
+                if thinking is not None:
+                    thinking.flush()
+                    thinking = None
+                console.print_above(console_ux.paint("interrupted; the turn was discarded", "yellow"))
+            elif kind == "error":
+                active = False
+                messages.pop()
+                if thinking is not None:
+                    thinking.flush()
+                    thinking = None
+                for text in payload:
+                    console.print_above(console_ux.paint(text, "red"))
+
+    try:
+        while True:
+            # 1. drain streamed output and finish the turn
+            drain_work()
+
+            # 2. a queued message starts as soon as the previous turn finishes
+            if not active and pending:
+                start_request(pending.pop(0))
+
+            # 3. fall back to line input if raw keys are unavailable
+            if reader is not None and reader.failed:
+                reader.stop()
+                reader = None
+                console.close()
+                console = console_ux.PlainConsole()
+                console.print_above(console_ux.paint("keyboard input unavailable; using line input", "yellow"))
+
+            # 4. collect input without blocking the stream
+            events = reader.poll() if reader is not None else plain_events()
+            leaving = False
+            for action, text in events:
+                if action == "submit":
+                    line = text.strip()
+                    if not line:
+                        continue
+                    # echo the submitted line: without it a command that prints
+                    # its own help looks like nothing happened
+                    console.print_above(console_ux.paint("\u203a " + line, "cyan"))
+                    if line.lower() in {"exit", "quit"}:
+                        leaving = True
+                        break
+                    if line.startswith("/"):
+                        if handle_command(line) == "exit":
+                            leaving = True
+                            break
+                        continue
+                    pending.append(line)
+                    if active:
+                        console.print_above(console_ux.paint("\u23ce queued for the next turn", "dim"))
+                elif action == "cancel":
+                    interrupt()
+                elif action == "interrupt":
+                    if active:
+                        interrupt()
+                    else:
+                        leaving = True
+                        break
+                elif action == "exit":
+                    leaving = True
+                    break
+            if leaving:
+                drain_work()
+                if active:
+                    interrupt()
+                    if worker is not None:
+                        worker.join(timeout=1.0)
+                    drain_work()
+                console.close()
+                print("bye")
+                return EXIT_OK
+
+            # 5. redraw the pinned region
+            if active:
+                label = "Receiving" if answer else "Thinking"
+                # animate only while nothing else on screen is moving; otherwise
+                # hold the row still so it does not repaint on every token
+                calm = show_thinking and (time.monotonic() - last_transcript) < 0.6
+                status = chat_status_line(time.monotonic() - started, label, tokens,
+                                          animate=not calm)
+            else:
+                status = ""
+            if reader is not None:
+                editor = reader.editor
+                menu = (console_ux.menu_rows(CHAT_COMMANDS, editor.buffer, editor.menu_index, width)
+                        if editor.menu_open else [])
+                if menu and not status:
+                    status = console_ux.paint(
+                        "\u2191\u2193 select \u00b7 Enter run \u00b7 Tab complete \u00b7 Esc close", "dim")
+                console.update(status, editor.buffer, editor.caret, menu)
+            else:
+                console.update(status)
+            time.sleep(0.05)
+    finally:
+        if reader is not None:
+            reader.stop()
+        console.close()
+
+
+def command_chat(args: argparse.Namespace) -> int:
+    target = find_exercise(args.exercise) if getattr(args, "exercise", None) else None
+    if target is None:
+        target = current_exercise_from_state(current_state(), discover())
+    if target is None:
+        print("no exercise selected; use cstudy list or cstudy chat <exercise>", file=sys.stderr)
+        return EXIT_USAGE
+    if not interactive_terminal():
+        print("cstudy chat needs an interactive terminal; use cstudy ai <exercise> instead.", file=sys.stderr)
+        return EXIT_USAGE
+    return chat_session(target, timeout=getattr(args, "ai_timeout", 60.0),
+                        stream=getattr(args, "stream", True), raw=getattr(args, "raw", False))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1271,13 +1881,15 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("reset", parents=[common]); sub.add_parser("doctor", parents=[common])
     next_parser = sub.add_parser("next", parents=[common]); next_parser.add_argument("exercise", nargs="?")
     status_parser = sub.add_parser("status", parents=[common]); status_parser.add_argument("exercise", nargs="?")
-    ai_parser = sub.add_parser("ai", aliases=["hint"], parents=[common]); ai_parser.add_argument("exercise", nargs="?"); ai_parser.add_argument("--hint-only", action="store_true"); ai_parser.add_argument("--ai-timeout", type=float, default=30.0); ai_parser.add_argument("--setup", action="store_true")
+    ai_parser = sub.add_parser("ai", aliases=["hint"], parents=[common]); ai_parser.add_argument("exercise", nargs="?"); ai_parser.add_argument("--hint-only", action="store_true"); ai_parser.add_argument("--ai-timeout", type=float, default=30.0); ai_parser.add_argument("--setup", action="store_true"); ai_parser.add_argument("--raw", action="store_true")
+    chat_parser = sub.add_parser("chat", aliases=["ask"], parents=[common]); chat_parser.add_argument("exercise", nargs="?"); chat_parser.add_argument("--ai-timeout", type=float, default=60.0); chat_parser.add_argument("--no-stream", dest="stream", action="store_false", default=True); chat_parser.add_argument("--raw", action="store_true")
     for name in ("prev", "edit", "skip"):
         item = sub.add_parser(name, parents=[common]); item.add_argument("exercise")
     return root
 
 
 def main() -> int:
+    console_ux.enable_windows_vt()
     args = build_parser().parse_args()
     if not args.command:
         exercises = discover(); state = current_state(); target = current_exercise_from_state(state, exercises)
@@ -1305,6 +1917,8 @@ def main() -> int:
     if args.command in {"ai", "hint"}:
         if args.command == "hint": args.hint_only = True
         return command_ai(args)
+    if args.command in {"chat", "ask"}:
+        return command_chat(args)
     return EXIT_USAGE
 
 

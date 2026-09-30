@@ -23,6 +23,7 @@ cstudy reset                 # restore Ques.c.bak and clear progress
 cstudy check --json          # machine-readable result for CI
 cstudy hint 00-introduction/compile-run              # optional API hint
 cstudy ai 00-introduction/compile-run --hint-only    # optional API-based learning help
+cstudy chat 00-introduction/compile-run              # multi-turn AI conversation (alias: ask)
 ```
 
 An empty invocation opens the interactive learning console. It shows progress
@@ -50,6 +51,26 @@ OpenAI-compatible gateway, `CSTUDY_AI_MODEL` for the model name, and
 `CSTUDY_API_MODE=responses` when the gateway exposes the Responses API instead
 of Chat Completions. Requests are time-limited and never write AI output into
 `Ques.c` automatically.
+
+`cstudy chat` (also the `a` key in the interactive console) keeps a multi-turn
+conversation about the current exercise. While a request is in flight it shows a
+spinner with elapsed time and a live preview of the streamed answer; once the
+answer is complete it is rendered as Markdown for the terminal width. Rendering
+is skipped when stdout is redirected or `NO_COLOR` is set, so piped output stays
+plain. Input is never blocked: a pinned status row shows the spinner, elapsed
+time, token count and a live preview of the thinking or the answer, while the
+input row stays editable with the terminal cursor parked at the insertion point
+(shown even when the host had hidden it). Enter queues a message for after the current turn,
+`Esc` interrupts it, and `Ctrl+C` leaves. Reasoning models (`deepseek-reasoner`)
+stream their thinking line by line into the transcript; `/thinking` toggles it and
+`/model <name>` switches models. Use `--no-stream` for a single blocking request
+and `--raw` for verbatim Markdown. Inside a session, `/hint`, `/code`, `/clear`, `/raw`, `/stream`,
+`/save <file>`, and `/exit` are available. Opening the chat from the watch
+screen leaves the alternate buffer first, so the transcript is written to the
+normal buffer and can be scrolled back through. Typing `/` opens a completion
+menu above the input row: Up/Down move the highlight (stopping at both ends),
+Enter runs argument-free commands or completes the ones that take an argument,
+Tab completes without running, and Esc closes the menu before it interrupts.
 
 The current `scripts/cstudy.ps1` and `scripts/cstudy.sh` remain available for
 legacy workflows. The new root-level entry points are the canonical CLI while
