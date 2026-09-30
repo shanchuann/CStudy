@@ -52,7 +52,7 @@ COMPLETION_MARKERS = ("// Done", "//DONE", "// I AM NOT DONE")
 ANSI = {"reset": "\x1b[0m", "bold": "\x1b[1m", "green": "\x1b[32m", "red": "\x1b[31m", "yellow": "\x1b[33m", "cyan": "\x1b[36m", "dim": "\x1b[2m"}
 AI_PROVIDERS = {
     "1": ("OpenAI", "https://api.openai.com/v1", "gpt-4o-mini", "chat"),
-    "2": ("DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat", "chat"),
+    "2": ("DeepSeek", "https://api.deepseek.com", "deepseek-flash", "chat"),
     "3": ("GLM", "https://open.bigmodel.cn/api/paas/v4", "glm-4-flash", "chat"),
 }
 
@@ -1180,6 +1180,11 @@ def command_ai(args: argparse.Namespace) -> int:
     api_key = ai_cfg["api_key"]
     base_url = ai_cfg["api_base"].rstrip("/")
     model = ai_cfg["model"]
+    if "api.deepseek.com" in base_url.lower() and ai_cfg["mode"] == "responses":
+        print("DeepSeek configuration error: its OpenAI-compatible API uses chat mode.", file=sys.stderr)
+        print("Set ai_api_mode to chat, or run `cstudy ai --setup` and choose DeepSeek.", file=sys.stderr)
+        print(f"Expected endpoint: {base_url}/chat/completions", file=sys.stderr)
+        return 4
     source, tests = exercise_files(target)
     if source is None or tests is None:
         return EXIT_USAGE

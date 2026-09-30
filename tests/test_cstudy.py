@@ -262,9 +262,23 @@ class TestApiAssistant(unittest.TestCase):
             finally:
                 cstudy.STATE_DIR, cstudy.CONFIG_FILE = old_values
         self.assertEqual(saved["ai_provider"], "DeepSeek")
-        self.assertEqual(saved["ai_api_base"], "https://api.deepseek.com/v1")
-        self.assertEqual(saved["ai_model"], "deepseek-chat")
+        self.assertEqual(saved["ai_api_base"], "https://api.deepseek.com")
+        self.assertEqual(saved["ai_model"], "deepseek-flash")
         self.assertEqual(saved["ai_api_key"], "secret-key")
+
+    def test_deepseek_responses_mode_is_actionable(self):
+        old = dict(os.environ); errors = io.StringIO()
+        try:
+            os.environ["CSTUDY_API_KEY"] = "test-key"
+            os.environ["CSTUDY_API_BASE"] = "https://api.deepseek.com"
+            os.environ["CSTUDY_API_MODE"] = "responses"
+            with contextlib.redirect_stderr(errors):
+                result = cstudy.command_ai(type("Args", (), {"exercise": "00-introduction/compile-run", "hint_only": True, "ai_timeout": 1.0})())
+        finally:
+            os.environ.clear(); os.environ.update(old)
+        self.assertEqual(result, 4)
+        self.assertIn("uses chat mode", errors.getvalue())
+        self.assertIn("/chat/completions", errors.getvalue())
 
     def test_http_error_includes_service_message(self):
         class Handler(BaseHTTPRequestHandler):
@@ -330,6 +344,7 @@ class TestApiAssistant(unittest.TestCase):
         try:
             os.environ["CSTUDY_API_KEY"] = "test-key"
             os.environ["CSTUDY_API_BASE"] = f"http://127.0.0.1:{server.server_port}/v1"
+            os.environ["CSTUDY_API_MODE"] = "chat"
             result = cstudy.command_ai(type("Args", (), {"exercise": "00-introduction/compile-run", "hint_only": True, "ai_timeout": 3.0})())
         finally:
             os.environ.clear(); os.environ.update(old)
