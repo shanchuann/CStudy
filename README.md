@@ -1,200 +1,349 @@
-# CStudy - 跨平台、脚本驱动的 C 语言学习平台
+<p align="center">
+  <img src="https://files.seeusercontent.com/2026/09/30/Q5nx/pasted-image-1790749599249.webp" alt="CStudy terminal preview" width="100%">
+</p>
 
-> 当前推荐入口是根目录的 `cstudy.py`，Windows 使用 `cstudy.ps1`，Linux/macOS 使用 `cstudy.sh`。三端共享同一套题目发现、判题、状态和日志实现。
+<h1 align="center">CStudy</h1>
 
-## 统一 CLI
+<p align="center">
+  跨平台、脚本驱动的 C 语言交互式学习平台
+</p>
 
-```text
-cstudy list
-cstudy progress
-cstudy curriculum
-cstudy verify
-cstudy run 00-introduction/compile-run
-cstudy check --json
-cstudy watch 00-introduction/compile-run
-cstudy next
-cstudy prev 00-introduction/compile-run
-cstudy edit 00-introduction/compile-run
-cstudy skip 00-introduction/compile-run
-cstudy status 00-introduction/compile-run
-cstudy validate
-cstudy doctor
-cstudy reset
-cstudy ai --setup
-cstudy ai 00-introduction/compile-run --hint-only
+<p align="center">
+  <a href="https://github.com/shanchuann/CStudy/actions/workflows/ci.yml"><img src="https://github.com/shanchuann/CStudy/actions/workflows/ci.yml/badge.svg" alt="CStudy CI"></a>
+  <img src="https://img.shields.io/badge/Python-3.9%2B-3776AB?logo=python&logoColor=white" alt="Python 3.9+">
+  <img src="https://img.shields.io/badge/C-C11-A8B9CC?logo=c&logoColor=black" alt="C11">
+  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-4B5563" alt="Windows Linux macOS">
+  <a href="LICENSE.txt"><img src="https://img.shields.io/badge/license-MIT-16A34A" alt="MIT License"></a>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/CLI-interactive-0EA5E9" alt="Interactive CLI">
+  <img src="https://img.shields.io/badge/judge-multi--case-F97316" alt="Multi-case judge">
+  <img src="https://img.shields.io/badge/AI-optional-8B5CF6" alt="Optional AI">
+  <img src="https://img.shields.io/badge/exercises-33-DC2626" alt="33 exercises">
+</p>
+
+CStudy 将题目描述、源码编辑、自动编译、测试判定、完成进度和可选 AI 提示整合在同一个终端学习流程中。保存 `Ques.c` 后即可自动重新判题；通过当前练习后，流程会继续前往下一题。
+
+> Windows 使用 `cstudy.ps1`，Linux/macOS 使用 `cstudy.sh`。三个入口共享同一套 Python 核心、题目状态和判题逻辑。
+
+## 导航
+
+- [快速开始](#快速开始)
+- [交互界面](#交互界面)
+- [命令索引](#命令索引)
+- [判题与完成机制](#判题与完成机制)
+- [AI 辅助](#ai-辅助)
+- [题目结构](#题目结构)
+- [测试用例格式](#测试用例格式)
+- [项目结构](#项目结构)
+- [开发与验证](#开发与验证)
+- [常见问题](#常见问题)
+
+## 核心能力
+
+| 能力 | 说明 |
+| --- | --- |
+| 实时学习 | 监听当前 `Ques.c`，保存后自动编译和运行测试 |
+| 多用例判题 | 区分编译错误、运行错误、超时、输出超限和结果不匹配 |
+| 学习进度 | 记录当前题目、完成状态、跳过状态和最近一次判题结果 |
+| 交互列表 | 支持方向键移动、筛选、搜索并切换当前练习 |
+| 跨平台 | 支持 Windows PowerShell、Linux/WSL 和 macOS |
+| AI 提示 | 支持 OpenAI、DeepSeek、GLM 及其他 OpenAI-compatible 服务 |
+| 结构化输出 | 支持 `--json`，便于脚本、测试和 CI 使用 |
+| 动态题库 | 新练习通过目录和 `metadata.json` 自动加入，无需修改主程序 |
+
+## 快速开始
+
+### 环境要求
+
+| 依赖 | 要求 |
+| --- | --- |
+| Python | 3.9 或更高版本 |
+| C 编译器 | `gcc` 或 `clang` |
+| Windows | 推荐 PowerShell 7 |
+| Linux/macOS | Bash 或兼容 Shell |
+
+### Windows
+
+```powershell
+git clone https://github.com/shanchuann/CStudy.git
+cd CStudy
+.\cstudy.ps1
 ```
 
-直接运行 `cstudy.ps1`、`cstudy.sh` 或 `cstudy.py` 会进入实时学习界面，自动选择第一个未完成题目并执行判题。保存 `Ques.c` 后自动重判，当前源码路径带有终端可点击链接。界面按键为：`n` 下一题（当前题通过后）、`r` 重跑、`h` 提示、`a` 请求 AI 提示、`l` 题目列表、`x` 重置当前题、`q` 退出。列表中可用 `j/k` 或方向键移动，`d/p` 筛选已完成/未完成，`s` 搜索，回车切换当前题目。
+### Linux / macOS / WSL
 
-编辑器可通过 `--edit-cmd "code"`、`CSTUDY_EDIT_CMD`、`EDITOR` 或 `VISUAL` 配置；不希望自动打开编辑器时使用 `cstudy watch --no-editor`。
-
-判题使用 `gcc` 或 `clang` 的 C11 模式，默认启用 `-Wall -Wextra -O2`。每个测试用例有独立超时，每道题有总超时，程序在临时目录运行，结果写入 `.cstudy/logs/`，进度写入 `.cstudy/state.json`。这是本地轻量运行隔离，不等同于容器级安全沙箱。
-
-每道未完成题目的 `Ques.c` 末尾带有 `// Done` 标记。测试通过后，需要删除该标记并重新运行判题，题目才会记录为完成，`n` 才能进入下一题。这让代码测试结果和学习者的明确完成动作同时生效。
-
-题目目录支持扁平和章节结构，推荐格式如下：
-
-```text
-Exercises/01-basics/hello/
-├── description.md
-├── Ques.c
-├── Ques.c.bak
-├── Test.txt
-└── metadata.json
+```bash
+git clone https://github.com/shanchuann/CStudy.git
+cd CStudy
+bash ./cstudy.sh
 ```
 
-`metadata.json` 支持 `title`、`difficulty`、`tags`、`order` 和 `status`（`active`、`hidden`、`disabled`）。课程章节清单见 `book/curriculum.json`，内容对应《C语言圣经》GitBook。
+直接启动会恢复上次进度，选择第一个未完成练习，打开源码并进入实时判题界面。只想查看环境状态时运行：
 
-CI 使用非交互命令和 Python `unittest`，不会启动阻塞式控制台。
-
-CStudy 是一个跨平台、脚本驱动的 C 语言学习平台。三个入口共享同一套 Python 核心。
-
-## 特色功能
-
-- 跨平台 CLI：根目录 `cstudy.ps1`、`cstudy.sh` 和 `cstudy.py`
-- 动态题库：`Exercises/` 下每题一个目录（第 0 题为 `00-introduction/compile-run/`），含 `Ques.c`、`description.md`、`Test.txt`
-- 自动判题：解析 `Test.txt` 的 INPUT/OUTPUT/--- 分组并比对运行结果
-- 仓库验证：`validate --compile` 会在不运行测试的情况下编译全部题目，适合 CI
-- 进度展示：在主界面显示整体进度并自动聚焦第一个未完成题
-- AI 辅助：内置 OpenAI、DeepSeek、GLM 及自定义 OpenAI-compatible API 配置
-- 一键重置：清理完成标记并从 `Ques.c.bak` 恢复初始代码
-
-## 目录结构
-
-```text
-CStudy/
-├─ scripts/                # 辅助脚本（主 CLI 在根目录）
-├─ Exercises/              # 练习目录（每题一个子目录）
-│  └─ 00-introduction/compile-run/
-│     ├─ Ques.c            # 作答文件
-│     ├─ Ques.c.bak        # 初始备份
-│     ├─ description.md    # 题目描述
-│     └─ Test.txt          # 测试用例（INPUT/OUTPUT/---）
-├─ AIserver/
-│  └─ ai_server_stub.sh    # API 配置提示（核心请求在 cstudy.py）
-├─ docs/
-│  └─ PROJECT_DESCRIPTION.md# 简明项目描述
-└─ ...
+```powershell
+.\cstudy.ps1 doctor
 ```
 
-## 快速开始（PowerShell / Windows）
+```bash
+bash ./cstudy.sh doctor
+```
 
-1. 打开 PowerShell，进入项目根目录
-2. 运行主脚本
+## 交互界面
 
-   ```powershell
-   cstudy.ps1
-   ```
+### 学习界面
 
-3. AI 是可选功能。首次在实时界面按 `a` 时，如果尚未配置，程序会启动配置向导；也可以主动运行：
+| 按键 | 操作 |
+| --- | --- |
+| `n` | 当前题通过后进入下一题 |
+| `r` | 立即重新编译并判题 |
+| `h` | 显示或隐藏题目提示 |
+| `a` | 请求当前题目的 AI 提示 |
+| `l` | 打开练习列表 |
+| `x` | 重置当前练习 |
+| `q` | 退出并保留进度 |
 
-   ```powershell
-   .\cstudy.ps1 ai --setup
-   ```
+### 练习列表
 
-### AI 入口
+| 按键 | 操作 |
+| --- | --- |
+| `↑` / `↓` 或 `k` / `j` | 移动选择项 |
+| `Enter` | 切换到选中的练习 |
+| `d` | 筛选已完成练习 |
+| `p` | 筛选未完成练习 |
+| `s` 或 `/` | 搜索练习 |
+| `g` / `G` | 跳到列表开头或末尾 |
+| `q` | 返回学习界面 |
 
-在实时学习界面按 `a`，CStudy 会把当前题目的描述、源码、测试用例和最近一次判题结果发送给配置的 OpenAI-compatible API，并显示针对当前题目的提示。按 Enter 返回学习界面。未配置时只需填写 API Base 和 API key。CStudy 会识别内置服务并选择模型和接口模式；其他 OpenAI-compatible 服务会通过 `/models` 自动选择对话模型。
+编辑器可通过 `--edit-cmd "code"`、`CSTUDY_EDIT_CMD`、`EDITOR` 或 `VISUAL` 配置。不希望自动打开编辑器时使用 `watch --no-editor`。
 
-向导内置以下识别规则：
+## 命令索引
 
-| 服务 | API Base | 默认模型 | 接口模式 |
+| 命令 | 用途 |
+| --- | --- |
+| `cstudy list` | 显示题目与完成状态 |
+| `cstudy progress` | `list` 的进度别名 |
+| `cstudy curriculum` | 查看课程章节映射 |
+| `cstudy run <id>` | 编译并判定指定练习 |
+| `cstudy check` | 检查练习 |
+| `cstudy watch [id]` | 进入实时学习流程 |
+| `cstudy next` | 前往下一题 |
+| `cstudy prev <id>` | 前往上一题 |
+| `cstudy edit <id>` | 使用配置的编辑器打开题目 |
+| `cstudy hint <id>` | 获取题目提示 |
+| `cstudy skip <id>` | 跳过并记录题目状态 |
+| `cstudy status [id]` | 查看当前或指定题目状态 |
+| `cstudy reset` | 恢复题目初始代码并重置进度 |
+| `cstudy validate --compile` | 校验并编译整个题库 |
+| `cstudy doctor --json` | 输出环境诊断信息 |
+| `cstudy ai --setup` | 配置 AI 服务 |
+| `cstudy ai <id> --hint-only` | 获取提示，不直接给出完整答案 |
+
+机器可读模式示例：
+
+```bash
+bash ./cstudy.sh check --json
+bash ./cstudy.sh validate --json
+```
+
+## 判题与完成机制
+
+判题器使用 C11 模式编译源码：
+
+```text
+gcc -std=c11 -Wall -Wextra -O2
+```
+
+编译、运行和输出比较均在临时目录进行。每个用例有独立超时，每道题有总运行时限，并限制最大输出量。行尾会被统一，但行内空格不会被随意删除。
+
+| 状态 | 含义 |
+| --- | --- |
+| `PASS` | 编译成功且所有测试用例通过 |
+| `WARNING` | 测试通过，但仍保留 `// Done` 完成标记 |
+| `compile_error` | C 源码编译失败 |
+| `runtime_error` | 程序异常退出 |
+| `timeout` | 程序运行超时 |
+| `output_limit` | 程序输出超过限制 |
+| `output_mismatch` | 实际输出与预期结果不一致 |
+
+每道未完成练习的 `Ques.c` 中带有 `// Done` 标记。代码通过全部测试后，还需要删除该标记并再次保存，练习才会记录为完成并自动进入下一题。
+
+进度保存在 `.cstudy/state.json`，判题日志保存在 `.cstudy/logs/`。这些文件均为本地状态，不进入 Git。
+
+> CStudy 提供本地轻量运行隔离和进程资源控制，但不等同于容器或虚拟机级安全沙箱。请只运行可信练习代码。
+
+## AI 辅助
+
+AI 是可选功能，不参与判题结果。未配置或服务不可用时，练习、判题、进度和 CI 功能仍可正常使用。
+
+### 自动配置
+
+```powershell
+.\cstudy.ps1 ai --setup
+```
+
+```bash
+bash ./cstudy.sh ai --setup
+```
+
+向导只要求填写：
+
+1. API Base
+2. API Key
+
+CStudy 会自动识别服务、选择模型和接口模式。对于其他 OpenAI-compatible 服务，会调用 `<API Base>/models` 自动选择对话模型。
+
+| 服务 | API Base | 自动模型 | 接口 |
 | --- | --- | --- | --- |
 | OpenAI | `https://api.openai.com/v1` | `gpt-4o-mini` | Chat Completions |
 | DeepSeek | `https://api.deepseek.com` | `deepseek-flash` | Chat Completions |
 | GLM | `https://open.bigmodel.cn/api/paas/v4` | `glm-4-flash` | Chat Completions |
-| 自定义 | 由用户填写 | 由用户填写 | Chat Completions 或 Responses |
+| 其他兼容服务 | 用户填写 | 通过 `/models` 发现 | Chat Completions |
 
-向导会将配置写入本地 `.cstudy/config.json`。该目录已被 Git 忽略，不会进入仓库；其中的 API key 是明文保存的，请勿分享该文件。若不希望把密钥写入文件，可以跳过向导，改用环境变量。
+配置保存在 `.cstudy/config.json`。该目录已被 Git 忽略，但 API Key 仍以明文保存在本机，请勿分享配置文件、终端日志或包含密钥的截图。
 
-也可以直接从命令行调用：
+### 环境变量
 
-```powershell
-# 当前题目给出提示，不修改 Ques.c
-.\cstudy.ps1 ai 01-basics/hello --hint-only
-
-# 获取错误分析和参考实现建议
-.\cstudy.ps1 ai 01-basics/hello
-```
-
-Linux/macOS 使用：
-
-```bash
-./cstudy.sh ai 01-basics/hello --hint-only
-```
-
-`CSTUDY_*` 环境变量优先于本地配置，适合 CI、临时切换服务或不落盘保存密钥：
+`CSTUDY_*` 环境变量优先于本地配置，适合 CI 或临时切换服务：
 
 ```powershell
-# PowerShell：DeepSeek 示例
 $env:CSTUDY_API_KEY = "your-key"
 $env:CSTUDY_API_BASE = "https://api.deepseek.com"
 $env:CSTUDY_AI_MODEL = "deepseek-flash"
 .\cstudy.ps1 ai 01-basics/hello --hint-only
 ```
 
-```bash
-# Bash/zsh：GLM 示例
-export CSTUDY_API_KEY="your-key"
-export CSTUDY_API_BASE="https://open.bigmodel.cn/api/paas/v4"
-export CSTUDY_AI_MODEL="glm-4-flash"
-./cstudy.sh ai 01-basics/hello --hint-only
+可用变量：
+
+| 变量 | 说明 |
+| --- | --- |
+| `CSTUDY_API_KEY` | 显式覆盖当前 API Key |
+| `CSTUDY_API_BASE` | API 基础地址 |
+| `CSTUDY_AI_MODEL` | 模型名称 |
+| `CSTUDY_API_MODE` | `chat` 或 `responses` |
+| `OPENAI_API_KEY` | 未配置服务时的兼容兜底 |
+
+密钥优先级为 `CSTUDY_API_KEY` → 本地 AI 配置 → `OPENAI_API_KEY`。
+
+### AI 请求内容
+
+CStudy 会发送当前题目描述、源码、测试用例和最近一次判题结果。AI 只输出分析、提示或参考解，不会自动覆盖 `Ques.c`。
+
+## 题目结构
+
+推荐使用章节化目录：
+
+```text
+Exercises/01-basics/hello/
+├── description.md   # 题目描述与学习目标
+├── Ques.c           # 学习者作答文件
+├── Ques.c.bak       # 初始代码备份
+├── Test.txt         # 测试用例
+└── metadata.json    # 题目元数据
 ```
 
-还可为支持该接口的服务设置 `CSTUDY_API_MODE=responses`；默认值 `chat` 使用兼容性更广的 `/chat/completions`。DeepSeek 当前的 OpenAI-compatible 接口应使用 `chat`，不要配置为 `responses`；`https://api.deepseek.com/anthropic` 是 Anthropic SDK 的兼容入口，不适用于 CStudy 当前的 OpenAI-compatible 请求格式。`CSTUDY_API_BASE` 应填写版本根地址，不要包含 `/chat/completions` 或 `/responses`。密钥优先级为 `CSTUDY_API_KEY`、本地 AI 配置、`OPENAI_API_KEY`；后者仅作为未配置服务时的兼容兜底。未配置 AI 不影响判题、watch、list 等核心功能。
+`metadata.json` 支持以下字段：
 
-## 命令说明
+| 字段 | 说明 |
+| --- | --- |
+| `title` | 题目标题 |
+| `difficulty` | 难度 |
+| `tags` | 标签数组 |
+| `order` | 固定排序值 |
+| `status` | `active`、`hidden` 或 `disabled` |
+| `sources` | 多源文件练习的源码列表 |
 
-- check：检测全部练习
-- run <id>：检测指定练习
-- list：显示题目列表与完成情况
-- ai：调用配置的 API 获取学习辅助；`ai --setup` 打开配置向导
-- reset：清理完成标记并用 `Ques.c.bak` 还原 `Ques.c`
-- quit：退出系统
+## 测试用例格式
 
-## 测试用例规范（Test.txt）
-
-使用以下分节格式，可以定义多组用例：
+`Test.txt` 使用 `INPUT`、`OUTPUT` 和 `---` 定义多组用例：
 
 ```text
 INPUT:
-<标准输入（可多行）>
+<标准输入，可多行>
 OUTPUT:
-<期望输出（可多行）>
+<预期输出，可多行>
 ---
+INPUT:
+<下一组输入>
+OUTPUT:
+<下一组输出>
 ```
 
-命令行参数题可以在 `INPUT:` 前增加一行，例如 `ARGS: one two`；参数会按 shell 规则解析并传给 `main(int argc, char **argv)`。
+命令行参数题可在 `INPUT:` 前加入：
 
-判题器将依次编译运行并严格按行比对输出。
+```text
+ARGS: one two
+INPUT:
+OUTPUT:
+one two
+```
 
-## API AI 辅助
+参数会按 Shell 规则解析，并传给 `main(int argc, char **argv)`。
 
-- `cstudy ai 00-introduction/compile-run` 会将题目描述、当前代码、测试用例和最近一次判题结果发送到 API
-- `cstudy ai 00-introduction/compile-run --hint-only` 只请求提示和调试问题，不直接给出完整答案
-- `cstudy ai --setup` 可切换 OpenAI、DeepSeek、GLM 或自定义兼容服务
-- API 失败时会显示 HTTP 状态、服务端错误消息和请求端点；鉴权失败、接口地址错误、限流、网络失败、超时、非法 JSON 和响应格式异常会分别报告
-- AI 无论成功或失败都不会修改题目文件
+## 项目结构
 
-## 重置与备份
+```text
+CStudy/
+├── cstudy.py              # 跨平台 CLI、判题器和交互界面
+├── cstudy.ps1             # Windows 入口
+├── cstudy.sh              # Linux/macOS/WSL 入口
+├── Exercises/             # 练习题库
+├── book/                  # 章节清单与题目映射
+├── tests/                 # 单元与集成测试
+├── docs/                  # 开发和项目文档
+├── AIserver/              # AI 配置兼容提示
+└── .github/workflows/     # 三平台 CI
+```
 
-- 每个练习目录可维护 `Ques.c.bak` 作为初始备份
-- 执行 `reset`：
-  - 删除所有 `done.flag`
-  - 用 `Ques.c.bak` 覆盖 `Ques.c`（若存在）
-  - 清理残留 `.exe`
+## 开发与验证
+
+运行全部单元测试：
+
+```bash
+python -m unittest discover -s tests -p 'test_*.py' -v
+```
+
+校验题目元数据、测试格式与源码编译：
+
+```bash
+python cstudy.py validate --compile
+```
+
+CI 在 Windows、Linux 和 macOS 上分别执行完整单元测试与 CLI smoke tests，并且不会启动阻塞式交互界面。
 
 ## 常见问题
 
-- 判题失败但无输出：检查是否存在 `Test.txt` 且格式正确；确认代码能成功编译
-- AI 未配置：运行 `cstudy ai --setup`，或设置 `CSTUDY_API_KEY`、`CSTUDY_API_BASE`、`CSTUDY_AI_MODEL`
-- AI 返回 HTTP 401/403：检查 API key 是否有效，以及账号是否有权访问所选模型
-- AI 返回 HTTP 404：确认 API Base 是版本根地址，并检查 `CSTUDY_API_MODE` 是否与服务兼容
-- AI 返回 HTTP 429：检查服务商的速率限制、余额或配额
-- AI 连接失败或超时：检查 API Base、网络、代理和服务状态，可用 `--ai-timeout` 调整等待时间
-- 未显示“运行结果”：若 `Test.txt` 无 INPUT 段，则直接运行程序的默认输出
+<details>
+<summary><strong>保存代码后没有通过</strong></summary>
 
-## 许可证
+查看界面中的编译错误、实际输出和预期输出。输出比较只统一行尾，不会忽略多余空格。测试全部通过后还需要删除源码中的 `// Done`。
+</details>
 
-本项目基于 MIT 许可证开源，允许个人或商业场景下的使用、修改与分发，详见LICENSE.txt文件。
+<details>
+<summary><strong>没有自动打开编辑器</strong></summary>
 
+设置 `CSTUDY_EDIT_CMD`、`EDITOR` 或 `VISUAL`，也可以向 `watch` 传入 `--edit-cmd "code"`。
+</details>
+
+<details>
+<summary><strong>AI 返回 401 或 403</strong></summary>
+
+检查密钥是否有效、账号是否有权访问模型，以及是否存在覆盖本地配置的 `CSTUDY_API_KEY`。运行 `cstudy doctor --json` 可查看当前 API Base 和模型，但不会输出密钥。
+</details>
+
+<details>
+<summary><strong>AI 返回 404</strong></summary>
+
+API Base 应填写版本根地址，不要包含 `/chat/completions` 或 `/responses`。DeepSeek 使用 `https://api.deepseek.com`。
+</details>
+
+<details>
+<summary><strong>AI 请求超时或触发限流</strong></summary>
+
+检查网络、代理、服务余额和速率限制。可使用 `--ai-timeout` 调整等待时间。
+</details>
+
+## License
+
+本项目采用 [MIT License](LICENSE.txt)，可用于学习、修改与分发。
