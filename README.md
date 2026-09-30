@@ -20,6 +20,7 @@ cstudy status 00-introduction/compile-run
 cstudy validate
 cstudy doctor
 cstudy reset
+cstudy ai --setup
 cstudy ai 00-introduction/compile-run --hint-only
 ```
 
@@ -55,7 +56,7 @@ CStudy 是一个跨平台、脚本驱动的 C 语言学习平台。三个入口�
 - 自动判题：解析 `Test.txt` 的 INPUT/OUTPUT/--- 分组并比对运行结果
 - 仓库验证：`validate --compile` 会在不运行测试的情况下编译全部题目，适合 CI
 - 进度展示：在主界面显示整体进度并自动聚焦第一个未完成题
-- AI 辅助：通过 OpenAI-compatible API 生成提示、分析和参考解
+- AI 辅助：内置 OpenAI、DeepSeek、GLM 及自定义 OpenAI-compatible API 配置
 - 一键重置：清理完成标记并从 `Ques.c.bak` 恢复初始代码
 
 ## 目录结构
@@ -85,14 +86,26 @@ CStudy/
    cstudy.ps1
    ```
 
-3. 使用 AI 前设置 API 环境变量：
-   - `CSTUDY_API_KEY` 或 `OPENAI_API_KEY`
-   - 可选 `CSTUDY_API_BASE`（默认 `https://api.openai.com/v1`）
-   - 可选 `CSTUDY_AI_MODEL`（默认 `gpt-4o-mini`）
+3. AI 是可选功能。首次在实时界面按 `a` 时，如果尚未配置，程序会启动配置向导；也可以主动运行：
+
+   ```powershell
+   .\cstudy.ps1 ai --setup
+   ```
 
 ### AI 入口
 
-在实时学习界面按 `a`，CStudy 会把当前题目的描述、源码、测试用例和最近一次判题结果发送给配置的 OpenAI-compatible API，并显示针对当前题目的提示。按 Enter 返回学习界面。
+在实时学习界面按 `a`，CStudy 会把当前题目的描述、源码、测试用例和最近一次判题结果发送给配置的 OpenAI-compatible API，并显示针对当前题目的提示。按 Enter 返回学习界面。未配置时会依次询问服务商、API 地址、模型、接口模式和 API key。
+
+向导内置以下默认值：
+
+| 服务 | API Base | 默认模型 | 接口模式 |
+| --- | --- | --- | --- |
+| OpenAI | `https://api.openai.com/v1` | `gpt-4o-mini` | Chat Completions |
+| DeepSeek | `https://api.deepseek.com/v1` | `deepseek-chat` | Chat Completions |
+| GLM | `https://open.bigmodel.cn/api/paas/v4` | `glm-4-flash` | Chat Completions |
+| 自定义 | 由用户填写 | 由用户填写 | Chat Completions 或 Responses |
+
+向导会将配置写入本地 `.cstudy/config.json`。该目录已被 Git 忽略，不会进入仓库；其中的 API key 是明文保存的，请勿分享该文件。若不希望把密钥写入文件，可以跳过向导，改用环境变量。
 
 也可以直接从命令行调用：
 
@@ -110,14 +123,32 @@ Linux/macOS 使用：
 ./cstudy.sh ai 01-basics/hello --hint-only
 ```
 
-AI 是可选功能；未配置 API key 时，判题、watch、list 等核心功能仍然可用。
+环境变量优先于本地配置，适合 CI、临时切换服务或不落盘保存密钥：
+
+```powershell
+# PowerShell：DeepSeek 示例
+$env:CSTUDY_API_KEY = "your-key"
+$env:CSTUDY_API_BASE = "https://api.deepseek.com/v1"
+$env:CSTUDY_AI_MODEL = "deepseek-chat"
+.\cstudy.ps1 ai 01-basics/hello --hint-only
+```
+
+```bash
+# Bash/zsh：GLM 示例
+export CSTUDY_API_KEY="your-key"
+export CSTUDY_API_BASE="https://open.bigmodel.cn/api/paas/v4"
+export CSTUDY_AI_MODEL="glm-4-flash"
+./cstudy.sh ai 01-basics/hello --hint-only
+```
+
+还可设置 `CSTUDY_API_MODE=responses` 使用 Responses API；默认值 `chat` 使用兼容性更广的 `/chat/completions`。`CSTUDY_API_BASE` 应填写版本根地址，不要包含 `/chat/completions` 或 `/responses`。`OPENAI_API_KEY` 仍作为 API key 的兼容变量。未配置 AI 不影响判题、watch、list 等核心功能。
 
 ## 命令说明
 
 - check：检测全部练习
 - run <id>：检测指定练习
 - list：显示题目列表与完成情况
-- ai：调用配置的 API 获取学习辅助
+- ai：调用配置的 API 获取学习辅助；`ai --setup` 打开配置向导
 - reset：清理完成标记并用 `Ques.c.bak` 还原 `Ques.c`
 - quit：退出系统
 
@@ -141,7 +172,9 @@ OUTPUT:
 
 - `cstudy ai 00-introduction/compile-run` 会将题目描述、当前代码、测试用例和最近一次判题结果发送到 API
 - `cstudy ai 00-introduction/compile-run --hint-only` 只请求提示和调试问题，不直接给出完整答案
-- API 失败、超时或返回格式异常时只输出错误，不修改题目文件
+- `cstudy ai --setup` 可切换 OpenAI、DeepSeek、GLM 或自定义兼容服务
+- API 失败时会显示 HTTP 状态、服务端错误消息和请求端点；鉴权失败、接口地址错误、限流、网络失败、超时、非法 JSON 和响应格式异常会分别报告
+- AI 无论成功或失败都不会修改题目文件
 
 ## 重置与备份
 
@@ -154,7 +187,11 @@ OUTPUT:
 ## 常见问题
 
 - 判题失败但无输出：检查是否存在 `Test.txt` 且格式正确；确认代码能成功编译
-- AI 无响应：检查 `CSTUDY_API_BASE`、API key、模型名和网络连接
+- AI 未配置：运行 `cstudy ai --setup`，或设置 `CSTUDY_API_KEY`、`CSTUDY_API_BASE`、`CSTUDY_AI_MODEL`
+- AI 返回 HTTP 401/403：检查 API key 是否有效，以及账号是否有权访问所选模型
+- AI 返回 HTTP 404：确认 API Base 是版本根地址，并检查 `CSTUDY_API_MODE` 是否与服务兼容
+- AI 返回 HTTP 429：检查服务商的速率限制、余额或配额
+- AI 连接失败或超时：检查 API Base、网络、代理和服务状态，可用 `--ai-timeout` 调整等待时间
 - 未显示“运行结果”：若 `Test.txt` 无 INPUT 段，则直接运行程序的默认输出
 
 ## 许可证

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import hashlib
 import json
 import os
@@ -49,6 +50,11 @@ EXIT_OK, EXIT_FAILED, EXIT_USAGE = 0, 1, 2
 _ALTERNATE_SCREEN = False
 COMPLETION_MARKERS = ("// Done", "//DONE", "// I AM NOT DONE")
 ANSI = {"reset": "\x1b[0m", "bold": "\x1b[1m", "green": "\x1b[32m", "red": "\x1b[31m", "yellow": "\x1b[33m", "cyan": "\x1b[36m", "dim": "\x1b[2m"}
+AI_PROVIDERS = {
+    "1": ("OpenAI", "https://api.openai.com/v1", "gpt-4o-mini", "chat"),
+    "2": ("DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat", "chat"),
+    "3": ("GLM", "https://open.bigmodel.cn/api/paas/v4", "glm-4-flash", "chat"),
+}
 
 
 def paint(value: str, colour: str) -> str:
@@ -173,6 +179,71 @@ def settings() -> dict:
     for key, default in defaults.items():
         value.setdefault(key, default)
     return value
+
+
+def save_settings(value: dict) -> None:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    CONFIG_FILE.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    try:
+        CONFIG_FILE.chmod(0o600)
+    except OSError:
+        pass
+
+
+def ai_configuration() -> dict[str, str]:
+    cfg = settings()
+    return {
+        "api_key": os.environ.get("CSTUDY_API_KEY") or os.environ.get("OPENAI_API_KEY") or str(cfg.get("ai_api_key", "")),
+        "api_base": os.environ.get("CSTUDY_API_BASE") or str(cfg.get("ai_api_base", "https://api.openai.com/v1")),
+        "model": os.environ.get("CSTUDY_AI_MODEL") or str(cfg.get("ai_model", "gpt-4o-mini")),
+        "mode": (os.environ.get("CSTUDY_API_MODE") or str(cfg.get("ai_api_mode", "chat"))).lower(),
+    }
+
+
+def print_ai_setup_help() -> None:
+    print("AI is not configured. Run `cstudy ai --setup` to configure it interactively.", file=sys.stderr)
+    print("You can also set CSTUDY_API_KEY, CSTUDY_API_BASE, and CSTUDY_AI_MODEL.", file=sys.stderr)
+    print("Supported presets: OpenAI, DeepSeek, GLM, and other OpenAI-compatible APIs.", file=sys.stderr)
+
+
+def configure_ai() -> bool:
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        print_ai_setup_help()
+        return False
+    print(paint("CStudy AI setup", "cyan"))
+    print("1. OpenAI\n2. DeepSeek\n3. GLM\n4. Other OpenAI-compatible API")
+    choice = read_line("Provider [1-4]: ")
+    if choice in AI_PROVIDERS:
+        provider, base_url, model, mode = AI_PROVIDERS[choice]
+    elif choice == "4":
+        provider, base_url, model, mode = "Custom", "", "", "chat"
+    else:
+        print("AI setup cancelled: choose a number from 1 to 4.", file=sys.stderr)
+        return False
+    base_url = read_line(f"API base [{base_url}]: ") or base_url
+    model = read_line(f"Model [{model}]: ") or model
+    requested_mode = read_line(f"API mode (chat/responses) [{mode}]: ").lower() or mode
+    if not base_url.startswith(("http://", "https://")):
+        print("AI setup failed: API base must start with http:// or https://.", file=sys.stderr)
+        return False
+    if not model:
+        print("AI setup failed: model cannot be empty.", file=sys.stderr)
+        return False
+    if requested_mode not in {"chat", "responses"}:
+        print("AI setup failed: API mode must be chat or responses.", file=sys.stderr)
+        return False
+    with cooked_terminal():
+        api_key = getpass.getpass("API key (saved only in .cstudy/config.json): ").strip()
+    if not api_key:
+        print("AI setup cancelled: API key cannot be empty.", file=sys.stderr)
+        return False
+    cfg = settings()
+    cfg.update({"ai_provider": provider, "ai_api_base": base_url.rstrip("/"),
+                "ai_model": model, "ai_api_mode": requested_mode, "ai_api_key": api_key})
+    save_settings(cfg)
+    print(paint(f"AI configured: {provider} / {model}", "green"))
+    print("The key is stored locally in the ignored .cstudy/config.json file.")
+    return True
 
 
 def exercise_id(directory: Path) -> str:
@@ -1015,6 +1086,7 @@ def command_curriculum(args: argparse.Namespace) -> int:
 
 def command_doctor(args: argparse.Namespace) -> int:
     exercises = discover(include_hidden=True, include_disabled=True)
+    ai_cfg = ai_configuration()
     invalid = []
     for directory in exercises:
         source, tests = exercise_files(directory)
@@ -1026,8 +1098,9 @@ def command_doctor(args: argparse.Namespace) -> int:
         "compiler": compiler() or "",
         "exercise_count": len(exercises),
         "invalid_exercises": invalid,
-        "api_configured": bool(os.environ.get("CSTUDY_API_KEY") or os.environ.get("OPENAI_API_KEY")),
-        "api_base": os.environ.get("CSTUDY_API_BASE", settings().get("ai_api_base", "https://api.openai.com/v1")),
+        "api_configured": bool(ai_cfg["api_key"]),
+        "api_base": ai_cfg["api_base"],
+        "ai_model": ai_cfg["model"],
         "status": "ready" if compiler() and exercises and not invalid else "not_ready",
     }
     if args.json:
@@ -1035,27 +1108,64 @@ def command_doctor(args: argparse.Namespace) -> int:
     else:
         for key, value in report.items(): print(f"{key}: {value}")
         if not report["api_configured"]:
-            print("note: API AI is optional; configure CSTUDY_API_KEY to enable it")
+            print("note: API AI is optional; run `cstudy ai --setup` to configure it")
     return EXIT_OK if report["status"] == "ready" else EXIT_FAILED
 
 
+def extract_ai_content(body: dict, api_mode: str) -> str:
+    if api_mode == "responses":
+        content = body.get("output_text")
+        if isinstance(content, str) and content:
+            return content
+        fragments = []
+        for item in body.get("output", []):
+            for part in item.get("content", []):
+                if isinstance(part.get("text"), str):
+                    fragments.append(part["text"])
+        return "".join(fragments)
+    content = body["choices"][0]["message"]["content"]
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(str(part.get("text", "")) for part in content if isinstance(part, dict))
+    return ""
+
+
+def api_error_message(raw: bytes) -> str:
+    text = raw.decode("utf-8", "replace").strip()
+    if not text:
+        return ""
+    try:
+        body = json.loads(text)
+        error = body.get("error", body) if isinstance(body, dict) else body
+        if isinstance(error, dict):
+            return str(error.get("message") or error.get("detail") or error.get("code") or text)
+        return str(error)
+    except json.JSONDecodeError:
+        return text[:1000]
+
+
 def command_ai(args: argparse.Namespace) -> int:
+    if getattr(args, "setup", False):
+        return EXIT_OK if configure_ai() else 4
     target_name = getattr(args, "exercise", None)
     if not target_name:
         print("AI is optional and uses an OpenAI-compatible API.")
-        print("usage: cstudy ai <exercise> [--hint-only]")
+        print("usage: cstudy ai <exercise> [--hint-only] | cstudy ai --setup")
         return EXIT_OK
     target = find_exercise(target_name)
     if target is None:
         print(f"exercise not found: {target_name}", file=sys.stderr)
         return EXIT_USAGE
-    api_key = os.environ.get("CSTUDY_API_KEY") or os.environ.get("OPENAI_API_KEY")
-    cfg = settings()
-    base_url = os.environ.get("CSTUDY_API_BASE", cfg.get("ai_api_base", "https://api.openai.com/v1")).rstrip("/")
-    model = os.environ.get("CSTUDY_AI_MODEL", cfg.get("ai_model", "gpt-4o-mini"))
-    if not api_key:
-        print("AI API key is not configured. Set CSTUDY_API_KEY or OPENAI_API_KEY.", file=sys.stderr)
-        return 4
+    ai_cfg = ai_configuration()
+    if not ai_cfg["api_key"]:
+        print_ai_setup_help()
+        if not (sys.stdin.isatty() and sys.stdout.isatty()) or not configure_ai():
+            return 4
+        ai_cfg = ai_configuration()
+    api_key = ai_cfg["api_key"]
+    base_url = ai_cfg["api_base"].rstrip("/")
+    model = ai_cfg["model"]
     source, tests = exercise_files(target)
     if source is None or tests is None:
         return EXIT_USAGE
@@ -1067,7 +1177,7 @@ def command_ai(args: argparse.Namespace) -> int:
               "Current code:\n" + read_text(source)[:10000] + "\n"
               "Tests:\n" + read_text(tests)[:5000] + "\n"
               "Latest grading result:\n" + json.dumps(previous, ensure_ascii=False)[:5000])
-    api_mode = os.environ.get("CSTUDY_API_MODE", cfg.get("ai_api_mode", "chat")).lower()
+    api_mode = ai_cfg["mode"]
     if api_mode == "responses":
         payload_value = {"model": model, "input": [{"role": "user", "content": [{"type": "input_text", "text": prompt}]}]}
         endpoint = "/responses"
@@ -1075,24 +1185,38 @@ def command_ai(args: argparse.Namespace) -> int:
         payload_value = {"model": model, "messages": [{"role": "user", "content": prompt}], "temperature": 0.2}
         endpoint = "/chat/completions"
     payload = json.dumps(payload_value, ensure_ascii=False).encode("utf-8")
-    request = urllib.request.Request(base_url + endpoint, data=payload,
-                                     headers={"Authorization": "Bearer " + api_key, "Content-Type": "application/json"}, method="POST")
     try:
+        request = urllib.request.Request(base_url + endpoint, data=payload,
+                                         headers={"Authorization": "Bearer " + api_key,
+                                                  "Content-Type": "application/json"}, method="POST")
         with urllib.request.urlopen(request, timeout=args.ai_timeout) as response:
             body = json.loads(response.read().decode("utf-8"))
-        if api_mode == "responses":
-            content = body.get("output_text") or "".join(
-                item.get("content", [{}])[0].get("text", "")
-                for item in body.get("output", []) if item.get("content"))
-        else:
-            content = body["choices"][0]["message"]["content"]
+        content = extract_ai_content(body, api_mode)
         if not content:
             raise KeyError("empty response content")
     except urllib.error.HTTPError as exc:
-        print(f"AI API error: HTTP {exc.code}", file=sys.stderr)
+        detail = api_error_message(exc.read())
+        print(f"AI API error: HTTP {exc.code} {exc.reason}", file=sys.stderr)
+        if detail:
+            print(f"Service message: {detail}", file=sys.stderr)
+        print(f"Endpoint: {base_url + endpoint}", file=sys.stderr)
+        if exc.code in {401, 403}:
+            print("Check the API key and whether it can access the selected model.", file=sys.stderr)
+        elif exc.code == 404:
+            print("Check CSTUDY_API_BASE, API mode, and the provider's compatible endpoint.", file=sys.stderr)
+        elif exc.code == 429:
+            print("The service rate limit or account quota was exceeded.", file=sys.stderr)
         return 4
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError, IndexError) as exc:
-        print(f"AI API request failed: {exc}", file=sys.stderr)
+    except (urllib.error.URLError, TimeoutError, ValueError) as exc:
+        reason = getattr(exc, "reason", exc)
+        print(f"AI API connection failed: {reason}", file=sys.stderr)
+        print(f"Endpoint: {base_url + endpoint}", file=sys.stderr)
+        return 4
+    except json.JSONDecodeError as exc:
+        print(f"AI API returned invalid JSON: {exc}", file=sys.stderr)
+        return 4
+    except (KeyError, IndexError, TypeError) as exc:
+        print(f"AI API returned an unsupported response format: {exc}", file=sys.stderr)
         return 4
     print(content.rstrip())
     return EXIT_OK
@@ -1110,7 +1234,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("reset", parents=[common]); sub.add_parser("doctor", parents=[common])
     next_parser = sub.add_parser("next", parents=[common]); next_parser.add_argument("exercise", nargs="?")
     status_parser = sub.add_parser("status", parents=[common]); status_parser.add_argument("exercise", nargs="?")
-    ai_parser = sub.add_parser("ai", aliases=["hint"], parents=[common]); ai_parser.add_argument("exercise", nargs="?"); ai_parser.add_argument("--hint-only", action="store_true"); ai_parser.add_argument("--ai-timeout", type=float, default=30.0)
+    ai_parser = sub.add_parser("ai", aliases=["hint"], parents=[common]); ai_parser.add_argument("exercise", nargs="?"); ai_parser.add_argument("--hint-only", action="store_true"); ai_parser.add_argument("--ai-timeout", type=float, default=30.0); ai_parser.add_argument("--setup", action="store_true")
     for name in ("prev", "edit", "skip"):
         item = sub.add_parser(name, parents=[common]); item.add_argument("exercise")
     return root

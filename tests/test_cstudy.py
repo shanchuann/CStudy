@@ -8,6 +8,7 @@ import time
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from unittest import mock
 
 import cstudy
 
@@ -85,6 +86,7 @@ class TestRepository(unittest.TestCase):
         watch = parser.parse_args(["watch"])
         self.assertIsNone(watch.exercise)
         self.assertTrue(watch.auto_next)
+        self.assertTrue(parser.parse_args(["ai", "--setup"]).setup)
 
     def test_list_and_curriculum_json_are_machine_readable(self):
         list_output = io.StringIO()
@@ -232,13 +234,77 @@ class TestGrading(unittest.TestCase):
 class TestApiAssistant(unittest.TestCase):
     def test_missing_api_key_is_actionable(self):
         old = dict(os.environ)
+        with tempfile.TemporaryDirectory() as temp:
+            old_config = cstudy.CONFIG_FILE
+            try:
+                cstudy.CONFIG_FILE = Path(temp) / "config.json"
+                os.environ.pop("CSTUDY_API_KEY", None)
+                os.environ.pop("OPENAI_API_KEY", None)
+                result = cstudy.command_ai(type("Args", (), {"exercise": "00-introduction/compile-run", "hint_only": True, "ai_timeout": 1.0})())
+            finally:
+                cstudy.CONFIG_FILE = old_config
+                os.environ.clear(); os.environ.update(old)
+        self.assertEqual(result, 4)
+
+    def test_setup_saves_deepseek_configuration(self):
+        with tempfile.TemporaryDirectory() as temp:
+            old_values = (cstudy.STATE_DIR, cstudy.CONFIG_FILE)
+            cstudy.STATE_DIR = Path(temp) / ".cstudy"
+            cstudy.CONFIG_FILE = cstudy.STATE_DIR / "config.json"
+            answers = iter(["2", "", "", ""])
+            try:
+                with mock.patch.object(cstudy.sys.stdin, "isatty", return_value=True), \
+                     mock.patch.object(cstudy.sys.stdout, "isatty", return_value=True), \
+                     mock.patch.object(cstudy, "read_line", side_effect=lambda *_: next(answers)), \
+                     mock.patch.object(cstudy.getpass, "getpass", return_value="secret-key"):
+                    self.assertTrue(cstudy.configure_ai())
+                saved = cstudy.load_json(cstudy.CONFIG_FILE, {})
+            finally:
+                cstudy.STATE_DIR, cstudy.CONFIG_FILE = old_values
+        self.assertEqual(saved["ai_provider"], "DeepSeek")
+        self.assertEqual(saved["ai_api_base"], "https://api.deepseek.com/v1")
+        self.assertEqual(saved["ai_model"], "deepseek-chat")
+        self.assertEqual(saved["ai_api_key"], "secret-key")
+
+    def test_http_error_includes_service_message(self):
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                response = json.dumps({"error": {"message": "invalid model"}}).encode()
+                self.send_response(400, "Bad Request")
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(response)))
+                self.end_headers()
+                self.wfile.write(response)
+
+            def log_message(self, *_):
+                pass
+
+        server = HTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+        old = dict(os.environ); errors = io.StringIO()
         try:
-            os.environ.pop("CSTUDY_API_KEY", None)
-            os.environ.pop("OPENAI_API_KEY", None)
-            result = cstudy.command_ai(type("Args", (), {"exercise": "00-introduction/compile-run", "hint_only": True, "ai_timeout": 1.0})())
+            os.environ["CSTUDY_API_KEY"] = "test-key"
+            os.environ["CSTUDY_API_BASE"] = f"http://127.0.0.1:{server.server_port}/v1"
+            with contextlib.redirect_stderr(errors):
+                result = cstudy.command_ai(type("Args", (), {"exercise": "00-introduction/compile-run", "hint_only": True, "ai_timeout": 3.0})())
+        finally:
+            os.environ.clear(); os.environ.update(old)
+            server.shutdown(); server.server_close(); thread.join(timeout=2)
+        self.assertEqual(result, 4)
+        self.assertIn("HTTP 400", errors.getvalue())
+        self.assertIn("invalid model", errors.getvalue())
+
+    def test_invalid_api_base_is_reported_without_traceback(self):
+        old = dict(os.environ); errors = io.StringIO()
+        try:
+            os.environ["CSTUDY_API_KEY"] = "test-key"
+            os.environ["CSTUDY_API_BASE"] = "not-a-url"
+            with contextlib.redirect_stderr(errors):
+                result = cstudy.command_ai(type("Args", (), {"exercise": "00-introduction/compile-run", "hint_only": True, "ai_timeout": 1.0})())
         finally:
             os.environ.clear(); os.environ.update(old)
         self.assertEqual(result, 4)
+        self.assertIn("AI API connection failed", errors.getvalue())
 
     def test_openai_compatible_chat_completion(self):
         received = {}
