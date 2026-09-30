@@ -376,10 +376,11 @@ def grade(directory: Path, timeout: float, total_timeout: float, max_output: int
         binary = temp / ("solution.exe" if os.name == "nt" else "solution")
         command = [cc, "-std=c11", "-Wall", "-Wextra", "-O2", *compile_sources, "-o", str(binary)]
         try:
-            # Small test budgets are intended for the exercise process. On
-            # hosted Windows runners gcc startup can exceed two seconds even
-            # for a tiny file, so give compilation a bounded platform grace.
-            compile_timeout = max(total_timeout, 10.0) if os.name == "nt" else total_timeout
+            # The exercise budget applies to the user's program, not compiler
+            # startup.  Hosted runners can spend several seconds launching
+            # gcc/clang (especially on macOS ARM), so keep a bounded minimum
+            # compile window on every platform.
+            compile_timeout = max(total_timeout, 10.0)
             compiled = subprocess.run(command, cwd=temp, text=True, capture_output=True, timeout=compile_timeout)
         except subprocess.TimeoutExpired as exc:
             result.update(status="compile_timeout", error="compiler timeout")
