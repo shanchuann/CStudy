@@ -18,7 +18,7 @@ import platform
 import contextlib
 import select
 import textwrap
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 import urllib.error
 import urllib.request
 from dataclasses import asdict, dataclass
@@ -51,9 +51,9 @@ _ALTERNATE_SCREEN = False
 COMPLETION_MARKERS = ("// Done", "//DONE", "// I AM NOT DONE")
 ANSI = {"reset": "\x1b[0m", "bold": "\x1b[1m", "green": "\x1b[32m", "red": "\x1b[31m", "yellow": "\x1b[33m", "cyan": "\x1b[36m", "dim": "\x1b[2m"}
 AI_PROVIDERS = {
-    "1": ("OpenAI", "https://api.openai.com/v1", "gpt-4o-mini", "chat"),
-    "2": ("DeepSeek", "https://api.deepseek.com", "deepseek-flash", "chat"),
-    "3": ("GLM", "https://open.bigmodel.cn/api/paas/v4", "glm-4-flash", "chat"),
+    "api.openai.com": ("OpenAI", "gpt-4o-mini", "chat"),
+    "api.deepseek.com": ("DeepSeek", "deepseek-flash", "chat"),
+    "open.bigmodel.cn": ("GLM", "glm-4-flash", "chat"),
 }
 
 
@@ -206,39 +206,57 @@ def print_ai_setup_help() -> None:
     print("Supported presets: OpenAI, DeepSeek, GLM, and other OpenAI-compatible APIs.", file=sys.stderr)
 
 
+def discover_compatible_model(base_url: str, api_key: str) -> Optional[str]:
+    endpoint = base_url.rstrip("/") + "/models"
+    request = urllib.request.Request(endpoint, headers={"Authorization": "Bearer " + api_key,
+                                                        "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=15.0) as response:
+            body = json.loads(response.read().decode("utf-8"))
+        identifiers = [str(item.get("id", "")) for item in body.get("data", [])
+                       if isinstance(item, dict) and item.get("id")]
+    except (urllib.error.URLError, TimeoutError, ValueError, json.JSONDecodeError, KeyError) as exc:
+        print(f"Could not discover models from {endpoint}: {getattr(exc, 'reason', exc)}", file=sys.stderr)
+        return None
+    excluded = ("embedding", "rerank", "image", "audio", "whisper", "tts")
+    candidates = [item for item in identifiers if not any(word in item.lower() for word in excluded)]
+    if not candidates:
+        print(f"No conversational model was returned by {endpoint}.", file=sys.stderr)
+        return None
+    preferred = ("chat", "instruct", "flash", "turbo", "plus", "gpt", "glm", "deepseek")
+    return max(candidates, key=lambda item: max((len(preferred) - index
+                                                for index, word in enumerate(preferred)
+                                                if word in item.lower()), default=0))
+
+
 def configure_ai() -> bool:
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         print_ai_setup_help()
         return False
     print(paint("CStudy AI setup", "cyan"))
-    print("1. OpenAI\n2. DeepSeek\n3. GLM\n4. Other OpenAI-compatible API")
-    choice = read_line("Provider [1-4]: ")
-    if choice in AI_PROVIDERS:
-        provider, base_url, model, mode = AI_PROVIDERS[choice]
-    elif choice == "4":
-        provider, base_url, model, mode = "Custom", "", "", "chat"
-    else:
-        print("AI setup cancelled: choose a number from 1 to 4.", file=sys.stderr)
-        return False
-    base_url = read_line(f"API base [{base_url}]: ") or base_url
-    model = read_line(f"Model [{model}]: ") or model
-    requested_mode = (read_line(f"API mode (chat/responses) [{mode}]: ").lower() or mode) if choice == "4" else mode
+    default_base = str(settings().get("ai_api_base", "https://api.openai.com/v1"))
+    base_url = read_line(f"API base [{default_base}]: ") or default_base
     if not base_url.startswith(("http://", "https://")):
         print("AI setup failed: API base must start with http:// or https://.", file=sys.stderr)
         return False
-    if not model:
-        print("AI setup failed: model cannot be empty.", file=sys.stderr)
-        return False
-    if requested_mode not in {"chat", "responses"}:
-        print("AI setup failed: API mode must be chat or responses.", file=sys.stderr)
-        return False
+    base_url = base_url.rstrip("/")
     with cooked_terminal():
         api_key = getpass.getpass("API key (saved only in .cstudy/config.json): ").strip()
     if not api_key:
         print("AI setup cancelled: API key cannot be empty.", file=sys.stderr)
         return False
+    host = (urlparse(base_url).hostname or "").lower()
+    known = AI_PROVIDERS.get(host)
+    if known:
+        provider, model, requested_mode = known
+    else:
+        provider, requested_mode = host or "Custom", "chat"
+        model = discover_compatible_model(base_url, api_key)
+        if not model:
+            print("AI setup failed: CStudy could not select a compatible chat model.", file=sys.stderr)
+            return False
     cfg = settings()
-    cfg.update({"ai_provider": provider, "ai_api_base": base_url.rstrip("/"),
+    cfg.update({"ai_provider": provider, "ai_api_base": base_url,
                 "ai_model": model, "ai_api_mode": requested_mode, "ai_api_key": api_key})
     save_settings(cfg)
     print(paint(f"AI configured: {provider} / {model}", "green"))

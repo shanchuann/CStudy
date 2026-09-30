@@ -94,9 +94,9 @@ CStudy/
 
 ### AI 入口
 
-在实时学习界面按 `a`，CStudy 会把当前题目的描述、源码、测试用例和最近一次判题结果发送给配置的 OpenAI-compatible API，并显示针对当前题目的提示。按 Enter 返回学习界面。未配置时会依次询问服务商、API 地址、模型和 API key。内置服务会自动选择正确的接口模式，只有自定义服务需要选择 Chat Completions 或 Responses。
+在实时学习界面按 `a`，CStudy 会把当前题目的描述、源码、测试用例和最近一次判题结果发送给配置的 OpenAI-compatible API，并显示针对当前题目的提示。按 Enter 返回学习界面。未配置时只需填写 API Base 和 API key。CStudy 会识别内置服务并选择模型和接口模式；其他 OpenAI-compatible 服务会通过 `/models` 自动选择对话模型。
 
-向导内置以下默认值：
+向导内置以下识别规则：
 
 | 服务 | API Base | 默认模型 | 接口模式 |
 | --- | --- | --- | --- |

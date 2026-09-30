@@ -264,7 +264,7 @@ class TestApiAssistant(unittest.TestCase):
             old_values = (cstudy.STATE_DIR, cstudy.CONFIG_FILE)
             cstudy.STATE_DIR = Path(temp) / ".cstudy"
             cstudy.CONFIG_FILE = cstudy.STATE_DIR / "config.json"
-            answers = iter(["2", "", ""])
+            answers = iter(["https://api.deepseek.com"])
             try:
                 with mock.patch.object(cstudy.sys.stdin, "isatty", return_value=True), \
                      mock.patch.object(cstudy.sys.stdout, "isatty", return_value=True), \
@@ -279,6 +279,28 @@ class TestApiAssistant(unittest.TestCase):
         self.assertEqual(saved["ai_model"], "deepseek-flash")
         self.assertEqual(saved["ai_api_mode"], "chat")
         self.assertEqual(saved["ai_api_key"], "secret-key")
+
+    def test_unknown_provider_discovers_chat_model(self):
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                response = json.dumps({"data": [
+                    {"id": "text-embedding-3-small"}, {"id": "example-chat"}]}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(response)))
+                self.end_headers()
+                self.wfile.write(response)
+
+            def log_message(self, *_):
+                pass
+
+        server = HTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+        try:
+            model = cstudy.discover_compatible_model(f"http://127.0.0.1:{server.server_port}/v1", "key")
+        finally:
+            server.shutdown(); server.server_close(); thread.join(timeout=2)
+        self.assertEqual(model, "example-chat")
 
     def test_deepseek_responses_mode_is_actionable(self):
         old = dict(os.environ); errors = io.StringIO()
