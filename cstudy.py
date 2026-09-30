@@ -777,11 +777,18 @@ def open_editor(target: Path, args: argparse.Namespace) -> bool:
 def raw_terminal():
     if os.name == "nt" or termios is None or tty is None or not sys.stdin.isatty():
         yield; return
-    fd = sys.stdin.fileno(); old = termios.tcgetattr(fd)
+    try:
+        fd = sys.stdin.fileno(); old = termios.tcgetattr(fd)
+    except (OSError, termios.error):
+        yield
+        return
     try:
         tty.setcbreak(fd); yield
     finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        try:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        except (OSError, termios.error):
+            pass
 
 
 def read_key(timeout: float = 0.1) -> Optional[str]:
@@ -827,14 +834,21 @@ def cooked_terminal():
     if os.name == "nt" or termios is None or not sys.stdin.isatty():
         yield
         return
-    fd = sys.stdin.fileno(); old = termios.tcgetattr(fd)
+    try:
+        fd = sys.stdin.fileno(); old = termios.tcgetattr(fd)
+    except (OSError, termios.error):
+        yield
+        return
     try:
         cooked = old[:]
         cooked[3] |= termios.ICANON | termios.ECHO
         termios.tcsetattr(fd, termios.TCSADRAIN, cooked)
         yield
     finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        try:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        except (OSError, termios.error):
+            pass
 
 
 def read_line(prompt: str = "") -> str:
