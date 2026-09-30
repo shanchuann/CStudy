@@ -449,9 +449,9 @@ def grade(directory: Path, timeout: float, total_timeout: float, max_output: int
         try:
             # The exercise budget applies to the user's program, not compiler
             # startup.  Hosted runners can spend several seconds launching
-            # gcc/clang (especially on macOS ARM), so keep a bounded minimum
+            # gcc/clang on cold hosted runners, so keep a bounded minimum
             # compile window on every platform.
-            compile_timeout = max(total_timeout, 10.0)
+            compile_timeout = max(total_timeout, 30.0)
             compiled = subprocess.run(command, cwd=temp, text=True, capture_output=True, timeout=compile_timeout)
         except subprocess.TimeoutExpired as exc:
             result.update(status="compile_timeout", error="compiler timeout")
