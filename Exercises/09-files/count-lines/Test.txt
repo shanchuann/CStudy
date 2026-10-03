@@ -1,6 +1,0 @@
-INPUT:
-one
-two
-three
-OUTPUT:
-3

@@ -1,0 +1,24 @@
+INPUT:
++ 3 4
+OUTPUT:
+7
+---
+INPUT:
+* 3 4
+OUTPUT:
+12
+---
+INPUT:
+/ 8 2
+OUTPUT:
+4
+---
+INPUT:
+/ 1 0
+OUTPUT:
+error
+---
+INPUT:
+- 3 4
+OUTPUT:
+error

@@ -1,0 +1,24 @@
+INPUT:
+2
+OUTPUT:
+prime
+---
+INPUT:
+1
+OUTPUT:
+not prime
+---
+INPUT:
+9
+OUTPUT:
+not prime
+---
+INPUT:
+997
+OUTPUT:
+prime
+---
+INPUT:
+1000000
+OUTPUT:
+not prime

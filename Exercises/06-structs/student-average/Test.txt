@@ -1,4 +1,0 @@
-INPUT:
-Lin 80 90 100
-OUTPUT:
-90.00

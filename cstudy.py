@@ -16,14 +16,12 @@ import tempfile
 import threading
 import time
 import platform
+from concurrent.futures import ThreadPoolExecutor
 import queue
 import contextlib
 import select
-import textwrap
 from urllib.parse import quote, urlparse
-import urllib.error
-import urllib.request
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
@@ -45,8 +43,33 @@ _ROOT_PATH = str(Path(__file__).resolve().parent)
 if _ROOT_PATH not in sys.path:
     sys.path.insert(0, _ROOT_PATH)
 import console_ux
+from ai import (AiCancelled, AiRequestError, configuration as resolve_ai_configuration,
+                discover_compatible_model, print_answer as print_ai_answer,
+                print_setup_help as print_ai_setup_help, request as ai_request)
+from chat import COMMANDS as CHAT_COMMANDS, HELP as CHAT_HELP, HINT_REQUEST
+from chat import status_line as chat_status_line, system_prompt as build_chat_system_prompt
 
-ROOT = Path(__file__).resolve().parent
+def resolve_root() -> Path:
+    """Locate the exercise catalogue.
+
+    Order: $CSTUDY_ROOT, then the current directory (if it holds Exercises/),
+    then the directory this module lives in. The first two make an installed
+    copy usable from anywhere, the last keeps `python cstudy.py` working from
+    a clone.
+    """
+    override = os.environ.get("CSTUDY_ROOT")
+    if override:
+        return Path(override).expanduser().resolve()
+    module_dir = Path(__file__).resolve().parent
+    for candidate in (Path.cwd(), module_dir):
+        try:
+            if (candidate / "Exercises").is_dir(): return candidate
+        except OSError:
+            continue
+    return module_dir
+
+
+ROOT = resolve_root()
 EXERCISES = ROOT / "Exercises"
 CURRICULUM = ROOT / "book" / "curriculum.json"
 EXERCISE_MAP = ROOT / "book" / "exercise-map.json"
@@ -54,7 +77,9 @@ STATE_DIR = ROOT / ".cstudy"
 STATE_FILE = STATE_DIR / "state.json"
 CONFIG_FILE = STATE_DIR / "config.json"
 LOG_DIR = STATE_DIR / "logs"
-VERSION = "0.3.0"
+VERSION = "0.5.0"
+MAX_LOG_BYTES = 2 * 1024 * 1024
+LOG_RETENTION_DAYS = 30
 EXIT_OK, EXIT_FAILED, EXIT_USAGE = 0, 1, 2
 _ALTERNATE_SCREEN = False
 COMPLETION_MARKERS = ("// Done", "//DONE", "// I AM NOT DONE")
@@ -98,6 +123,17 @@ def normalize(value: str) -> str:
     return value.replace("\r\n", "\n").replace("\r", "\n").rstrip("\n")
 
 
+def unescape_marker(raw: str) -> str:
+    """Undo the \\ escape used for data lines that look like a Test.txt marker.
+
+    A test whose input or expected output really is "INPUT:" (or OUTPUT:/ARGS:/
+    ---) is written with one leading backslash; every other line is untouched.
+    """
+    if raw.startswith("\\") and raw[1:].strip() in {"INPUT:", "OUTPUT:", "ARGS:", "---"}:
+        return raw[1:]
+    return raw
+
+
 def parse_tests(path: Path) -> list[TestCase]:
     lines = read_text(path).splitlines()
     cases: list[TestCase] = []
@@ -127,9 +163,9 @@ def parse_tests(path: Path) -> list[TestCase]:
         elif marker == "---":
             flush()
         elif mode == "input":
-            inputs.append(raw)
+            inputs.append(unescape_marker(raw))
         elif mode == "output":
-            outputs.append(raw)
+            outputs.append(unescape_marker(raw))
     flush()
     return cases
 
@@ -143,20 +179,46 @@ def load_json(path: Path, default: dict) -> dict:
 
 
 def current_state() -> dict:
+    """Read saved progress.
+
+    This is a pure read: pruning happens in save_state, so read-only commands
+    (list, status, progress) never rewrite the state file.
+    """
     state = load_json(STATE_FILE, {"version": 1, "exercises": {}, "current": None})
     state.setdefault("version", 1); state.setdefault("current", None)
     exercises = state.setdefault("exercises", {})
     if isinstance(exercises, dict):
-        known = {exercise_id(item) for item in discover(include_hidden=True, include_disabled=True)}
-        stale = set(exercises) - known
-        if stale:
-            for identifier in stale: exercises.pop(identifier, None)
-            if state.get("current") in stale: state["current"] = None
-            save_state(state)
+        for item in exercises.values():
+            if isinstance(item, dict): compact_entry(item)
+    return state
+
+
+def compact_entry(item: dict) -> dict:
+    """Downgrade a legacy full grading result to the bounded summary form."""
+    previous = item.get("last_result")
+    if isinstance(previous, dict) and isinstance(previous.get("cases"), list):
+        item["last_result"] = result_summary(previous)
+    return item
+
+
+def prune_state(state: dict) -> dict:
+    """Drop progress for exercises that no longer exist.
+
+    A failed discovery (empty result) never wipes existing progress.
+    """
+    known = {exercise_id(item) for item in discover(include_hidden=True, include_disabled=True)}
+    exercises = state.get("exercises")
+    if not known or not isinstance(exercises, dict):
+        return state
+    stale = set(exercises) - known
+    for identifier in stale: exercises.pop(identifier, None)
+    if state.get("current") in stale: state["current"] = None
     return state
 
 
 def save_state(value: dict) -> None:
+    prune_state(value)
+    invalidate_caches()
     STATE_DIR.mkdir(exist_ok=True)
     STATE_FILE.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
@@ -199,42 +261,8 @@ def save_settings(value: dict) -> None:
 
 
 def ai_configuration() -> dict[str, str]:
-    cfg = settings()
-    return {
-        "api_key": os.environ.get("CSTUDY_API_KEY") or str(cfg.get("ai_api_key", "")) or os.environ.get("OPENAI_API_KEY", ""),
-        "api_base": os.environ.get("CSTUDY_API_BASE") or str(cfg.get("ai_api_base", "https://api.openai.com/v1")),
-        "model": os.environ.get("CSTUDY_AI_MODEL") or str(cfg.get("ai_model", "gpt-4o-mini")),
-        "mode": (os.environ.get("CSTUDY_API_MODE") or str(cfg.get("ai_api_mode", "chat"))).lower(),
-    }
-
-
-def print_ai_setup_help() -> None:
-    print("AI is not configured. Run `cstudy ai --setup` to configure it interactively.", file=sys.stderr)
-    print("You can also set CSTUDY_API_KEY, CSTUDY_API_BASE, and CSTUDY_AI_MODEL.", file=sys.stderr)
-    print("Supported presets: OpenAI, DeepSeek, GLM, and other OpenAI-compatible APIs.", file=sys.stderr)
-
-
-def discover_compatible_model(base_url: str, api_key: str) -> Optional[str]:
-    endpoint = base_url.rstrip("/") + "/models"
-    request = urllib.request.Request(endpoint, headers={"Authorization": "Bearer " + api_key,
-                                                        "Content-Type": "application/json"})
-    try:
-        with urllib.request.urlopen(request, timeout=15.0) as response:
-            body = json.loads(response.read().decode("utf-8"))
-        identifiers = [str(item.get("id", "")) for item in body.get("data", [])
-                       if isinstance(item, dict) and item.get("id")]
-    except (urllib.error.URLError, TimeoutError, ValueError, json.JSONDecodeError, KeyError) as exc:
-        print(f"Could not discover models from {endpoint}: {getattr(exc, 'reason', exc)}", file=sys.stderr)
-        return None
-    excluded = ("embedding", "rerank", "image", "audio", "whisper", "tts")
-    candidates = [item for item in identifiers if not any(word in item.lower() for word in excluded)]
-    if not candidates:
-        print(f"No conversational model was returned by {endpoint}.", file=sys.stderr)
-        return None
-    preferred = ("chat", "instruct", "flash", "turbo", "plus", "gpt", "glm", "deepseek")
-    return max(candidates, key=lambda item: max((len(preferred) - index
-                                                for index, word in enumerate(preferred)
-                                                if word in item.lower()), default=0))
+    """Effective AI configuration: environment variables win over saved settings."""
+    return resolve_ai_configuration(settings())
 
 
 def configure_ai() -> bool:
@@ -284,30 +312,116 @@ def exercise_files(directory: Path) -> tuple[Optional[Path], Optional[Path]]:
     return source, tests if tests.exists() else None
 
 
+#: Interactive frames redraw on every keystroke. These caches key on file
+#: mtimes so one frame does not re-read 96 metadata.json and Ques.c files.
+_METADATA_CACHE: dict[tuple, dict] = {}
+_MARKER_CACHE: dict[tuple, bool] = {}
+_DISCOVERY_CACHE: dict[tuple, tuple[float, tuple, list[Path]]] = {}
+_DONE_CACHE: dict[tuple, tuple[float, set[str]]] = {}
+_CACHE_LIMIT = 512
+_DISCOVERY_TTL = 0.5
+_DONE_TTL = 0.5
+#: Bumped by invalidate_caches(); save_state() calls it, so any progress change
+#: invalidates the done-set memo without relying on dict identity.
+_STATE_REVISION = 0
+
+
+def invalidate_caches(discovery: bool = False) -> None:
+    """Drop memoized progress, and optionally the whole exercise tree."""
+    global _STATE_REVISION
+    _STATE_REVISION += 1
+    _DONE_CACHE.clear()
+    if discovery:
+        _DISCOVERY_CACHE.clear()
+        _METADATA_CACHE.clear()
+        _MARKER_CACHE.clear()
+
+
+def done_set(state: dict, exercises: list[Path]) -> set[str]:
+    """Ids of finished exercises.
+
+    is_done stats every source file and marker, so memoize briefly and let
+    save_state invalidate the memo whenever progress changes.
+    """
+    key = (str(EXERCISES), _STATE_REVISION, len(exercises))
+    now = time.monotonic()
+    cached = _DONE_CACHE.get(key)
+    if cached is not None and now - cached[0] < _DONE_TTL:
+        return cached[1]
+    done = {exercise_id(item) for item in exercises if is_done(item, state)}
+    _DONE_CACHE.clear()
+    _DONE_CACHE[key] = (now, done)
+    return done
+
+
+def exercises_signature() -> tuple:
+    """Cheap fingerprint of the exercise tree: directory mtimes only."""
+    if not EXERCISES.exists():
+        return ()
+    signature = []
+    for current, dirs, _files in os.walk(EXERCISES):
+        dirs.sort()
+        try:
+            signature.append((current, os.stat(current).st_mtime_ns))
+        except OSError:
+            pass
+    return tuple(signature)
+
+
 def has_completion_marker(directory: Path) -> bool:
     source, _ = exercise_files(directory)
     if source is None or not source.exists():
         return False
-    return any(marker in read_text(source) for marker in COMPLETION_MARKERS)
+    try:
+        stamp = source.stat().st_mtime_ns
+    except OSError:
+        stamp = None
+    key = (str(source), stamp)
+    if key in _MARKER_CACHE:
+        return _MARKER_CACHE[key]
+    value = any(marker in read_text(source) for marker in COMPLETION_MARKERS)
+    if len(_MARKER_CACHE) >= _CACHE_LIMIT: _MARKER_CACHE.clear()
+    _MARKER_CACHE[key] = value
+    return value
 
 
 def metadata(directory: Path) -> dict:
-    value = load_json(directory / "metadata.json", {})
+    meta_path = directory / "metadata.json"
+    description = directory / "description.md"
+    try: stamp = meta_path.stat().st_mtime_ns
+    except OSError: stamp = None
+    try: description_stamp = description.stat().st_mtime_ns
+    except OSError: description_stamp = None
+    key = (str(directory), stamp, description_stamp)
+    cached = _METADATA_CACHE.get(key)
+    if cached is not None:
+        return dict(cached)
+    value = load_json(meta_path, {})
     title = value.get("title") or value.get("name")
     if not title:
-        description = directory / "description.md"
         title = next((line[1:].strip() for line in read_text(description).splitlines()
                       if line.startswith("#")), directory.name) if description.exists() else directory.name
     value.update({"id": exercise_id(directory), "title": title,
                   "difficulty": value.get("difficulty", "unspecified"),
                   "tags": value.get("tags", []), "order": value.get("order", 0),
                   "status": value.get("status", "active")})
-    return value
+    if len(_METADATA_CACHE) >= _CACHE_LIMIT: _METADATA_CACHE.clear()
+    _METADATA_CACHE[key] = value
+    return dict(value)
 
 
 def discover(include_hidden: bool = False, include_disabled: bool = False) -> list[Path]:
     if not EXERCISES.exists():
         return []
+    cache_key = (str(EXERCISES), include_hidden, include_disabled)
+    now = time.monotonic()
+    cached = _DISCOVERY_CACHE.get(cache_key)
+    if cached is not None and now - cached[0] < _DISCOVERY_TTL:
+        return list(cached[2])
+    signature = exercises_signature()
+    if cached is not None and cached[1] == signature:
+        _DISCOVERY_CACHE[cache_key] = (now, signature, cached[2])
+        return list(cached[2])
     found = []
     for directory in EXERCISES.rglob("*"):
         if not directory.is_dir() or exercise_files(directory)[0] is None:
@@ -319,14 +433,16 @@ def discover(include_hidden: bool = False, include_disabled: bool = False) -> li
     def sort_key(path: Path) -> tuple[int, int, str]:
         # The directory chapter number is the primary curriculum order. The
         # metadata order remains the stable tie-breaker for multiple exercises
-        # in one chapter (for example 01-basics/hello before age).
+        # in one chapter (for example 02-basics/hello before dec-to-bin).
         prefix = path.relative_to(EXERCISES).parts[0].split("-", 1)[0]
         try:
             chapter = int(prefix)
         except ValueError:
             chapter = 10**9
         return chapter, int(metadata(path).get("order", 0) or 0), exercise_id(path).lower()
-    return sorted(found, key=sort_key)
+    ordered = sorted(found, key=sort_key)
+    _DISCOVERY_CACHE[cache_key] = (now, signature, ordered)
+    return list(ordered)
 
 
 def find_exercise(value: str) -> Optional[Path]:
@@ -335,6 +451,14 @@ def find_exercise(value: str) -> Optional[Path]:
     if value.isdigit() and 1 <= int(value) <= len(candidates):
         return candidates[int(value) - 1]
     return exact[0] if exact else None
+
+
+def require_exercise(value: str) -> Optional[Path]:
+    """Resolve a user-supplied exercise id, reporting one consistent error."""
+    target = find_exercise(value)
+    if target is None:
+        print(f"exercise not found: {value}", file=sys.stderr)
+    return target
 
 
 def is_done(directory: Path, state: dict) -> bool:
@@ -381,6 +505,78 @@ def terminate(process: subprocess.Popen[str]) -> None:
             pass
 
 
+#: Guard rail for runaway exercises on Windows, where there is no RLIMIT_AS.
+WINDOWS_MEMORY_LIMIT = 512 * 1024 * 1024
+
+
+def limit_process_memory(process: subprocess.Popen) -> Any:
+    """Best-effort memory cap for one graded process on Windows.
+
+    POSIX gets RLIMIT_AS in run_case; Windows has no equivalent call, so the child
+    is assigned to a Job Object carrying a process memory limit plus
+    kill-on-close. The assignment happens right after spawn, so a process could
+    allocate inside that tiny window: this is a guard rail, not a sandbox.
+    """
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class BasicLimit(ctypes.Structure):
+            _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64),
+                        ("PerJobUserTimeLimit", ctypes.c_int64),
+                        ("LimitFlags", wintypes.DWORD),
+                        ("MinimumWorkingSetSize", ctypes.c_size_t),
+                        ("MaximumWorkingSetSize", ctypes.c_size_t),
+                        ("ActiveProcessLimit", wintypes.DWORD),
+                        ("Affinity", ctypes.POINTER(ctypes.c_ulong)),
+                        ("PriorityClass", wintypes.DWORD),
+                        ("SchedulingClass", wintypes.DWORD)]
+
+        class IoCounters(ctypes.Structure):
+            _fields_ = [(name, ctypes.c_uint64) for name in
+                        ("ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+                         "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
+
+        class ExtendedLimit(ctypes.Structure):
+            _fields_ = [("BasicLimitInformation", BasicLimit), ("IoInfo", IoCounters),
+                        ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
+                        ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+        handle = getattr(process, "_handle", None)
+        if not handle:
+            return None
+        kernel32 = ctypes.windll.kernel32
+        job = kernel32.CreateJobObjectW(None, None)
+        if not job:
+            return None
+        info = ExtendedLimit()
+        # JOB_OBJECT_LIMIT_PROCESS_MEMORY | JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        info.BasicLimitInformation.LimitFlags = 0x0100 | 0x2000
+        info.ProcessMemoryLimit = WINDOWS_MEMORY_LIMIT
+        if not kernel32.SetInformationJobObject(job, 9, ctypes.byref(info), ctypes.sizeof(info)):
+            kernel32.CloseHandle(job)
+            return None
+        if not kernel32.AssignProcessToJobObject(job, int(handle)):
+            kernel32.CloseHandle(job)
+            return None
+        return job
+    except Exception:
+        return None
+
+
+def release_process_memory(job: Any) -> None:
+    """Close a Job Object handle created by limit_process_memory."""
+    if job is None:
+        return
+    try:
+        import ctypes
+        ctypes.windll.kernel32.CloseHandle(job)
+    except Exception:
+        pass
+
+
 def run_case(binary: Path, case: TestCase, timeout: float, max_output: int, cwd: Path) -> CaseResult:
     started = time.monotonic()
     stdout_path, stderr_path = cwd / "stdout.txt", cwd / "stderr.txt"
@@ -407,6 +603,7 @@ def run_case(binary: Path, case: TestCase, timeout: float, max_output: int, cwd:
         except (OSError, subprocess.SubprocessError) as exc:
             return CaseResult(False, case.input, case.expected, "", str(exc),
                               int((time.monotonic() - started) * 1000), -1, "runtime_error")
+        job = limit_process_memory(process)
         assert process.stdin is not None
         process.stdin.write(case.input + ("\n" if case.input else ""))
         process.stdin.close()
@@ -423,6 +620,7 @@ def run_case(binary: Path, case: TestCase, timeout: float, max_output: int, cwd:
                 break
             time.sleep(0.01)
         process.wait()
+        release_process_memory(job)
         stdout_file.flush(); stderr_file.flush()
     output = stdout_path.read_bytes()[:max_output].decode("utf-8", "replace")
     errors = stderr_path.read_bytes()[:max_output].decode("utf-8", "replace")
@@ -550,8 +748,61 @@ def compile_only(directory: Path, timeout: float) -> dict:
 
 def log_result(result: dict) -> None:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
-    with (LOG_DIR / f"{time.strftime('%Y%m%d')}.jsonl").open("a", encoding="utf-8") as stream:
+    path = LOG_DIR / f"{time.strftime('%Y%m%d')}.jsonl"
+    rotate_log(path)
+    prune_logs()
+    with path.open("a", encoding="utf-8") as stream:
         stream.write(json.dumps({"timestamp": time.time(), **result}, ensure_ascii=False) + "\n")
+
+
+def rotate_log(path: Path, limit: Optional[int] = None) -> None:
+    """Keep one rotated copy per day file so a log cannot grow without bound."""
+    if limit is None: limit = MAX_LOG_BYTES
+    try:
+        if path.exists() and path.stat().st_size >= limit:
+            backup = path.with_name(path.name + ".1")
+            if backup.exists(): backup.unlink()
+            path.rename(backup)
+    except OSError:
+        pass
+
+
+def prune_logs(days: int = LOG_RETENTION_DAYS) -> None:
+    """Delete log files older than the retention window."""
+    try:
+        cutoff = time.time() - days * 86400
+        for item in LOG_DIR.glob("*.jsonl*"):
+            if item.stat().st_mtime < cutoff: item.unlink()
+    except OSError:
+        pass
+
+
+def result_label(status: str) -> tuple[str, str]:
+    """Shared label and colour for one grading status (CLI and watch screen)."""
+    if status == "passed": return "PASS", "green"
+    if status == "incomplete_marker": return "WARNING", "yellow"
+    return "ERROR", "red"
+
+
+def case_lines(case: dict, index: int, compact: bool = False) -> list[str]:
+    """Render one test case for a log (compact=False) or the watch screen."""
+    duration = case.get("duration_ms", 0)
+    passed = bool(case.get("passed"))
+    if compact:
+        if passed:
+            output = str(case.get("actual", "")).replace("\n", " | ")
+            return [paint(f"  PASS case {index}", "green") + f"  {output}  {duration} ms"]
+        lines = [paint(f"  FAIL case {index}", "red") +
+                 f"  expected {case.get('expected', '')!r} | actual {case.get('actual', '')!r}  {duration} ms"]
+        if case.get("error"): lines.append("    " + str(case["error"]))
+        if case.get("stderr"): lines.append(paint("    stderr: " + str(case["stderr"]).strip()[:120], "yellow"))
+        return lines
+    lines = [f"  \u7528\u4f8b {index}: {'PASS' if passed else 'FAIL'} ({duration} ms)"]
+    if not passed:
+        if case.get("error"): lines.append(f"    \u9519\u8bef: {case['error']}")
+        lines.append(f"    \u671f\u671b: {case['expected']!r}")
+        lines.append(f"    \u5b9e\u9645: {case['actual']!r}")
+    return lines
 
 
 def print_result(result: dict, json_mode: bool = False, quiet: bool = False) -> None:
@@ -566,17 +817,37 @@ def print_result(result: dict, json_mode: bool = False, quiet: bool = False) -> 
     if result["status"] == "compile_error":
         print(result["compile"].get("stderr", "").rstrip())
     for number, case in enumerate(result.get("cases", []), 1):
-        print(f"  case {number}: {'PASS' if case['passed'] else 'FAIL'} ({case['duration_ms']} ms)")
-        if not case["passed"]:
-            if case.get("error"): print(f"    error: {case['error']}")
-            print(f"    expected: {case['expected']!r}")
-            print(f"    actual:   {case['actual']!r}")
+        for line in case_lines(case, number): print(line)
+
+
+def result_summary(result: dict, failure_limit: int = 3) -> dict:
+    """Bounded view of one grading result, safe to keep in the state file."""
+    cases = result.get("cases") or []
+    failures = []
+    for index, case in enumerate(cases, 1):
+        if case.get("passed"): continue
+        failures.append({"case": index,
+                         "input": str(case.get("input", ""))[:200],
+                         "expected": str(case.get("expected", ""))[:400],
+                         "actual": str(case.get("actual", ""))[:400],
+                         "error": str(case.get("error", ""))[:120]})
+        if len(failures) >= failure_limit: break
+    summary = {"status": result.get("status", "error"),
+               "duration_ms": result.get("duration_ms", 0),
+               "cases": len(cases),
+               "passed": sum(1 for case in cases if case.get("passed")),
+               "failures": failures}
+    if result.get("error"): summary["error"] = str(result["error"])[:300]
+    stderr = (result.get("compile") or {}).get("stderr", "")
+    if stderr: summary["compile_stderr"] = str(stderr)[:800]
+    return summary
 
 
 def record(directory: Path, result: dict, state: dict) -> None:
     source, _ = exercise_files(directory)
     item = state.setdefault("exercises", {}).setdefault(exercise_id(directory), {})
-    item.update({"status": result["status"], "last_result": result,
+    item.update({"status": result["status"], "last_result": result_summary(result),
+                 "at": time.strftime("%Y-%m-%d %H:%M:%S"),
                  "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest() if source else ""})
     state["current"] = exercise_id(directory)
     if result["status"] == "passed" and not has_completion_marker(directory):
@@ -622,22 +893,55 @@ def command_progress(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def default_jobs(count: int) -> int:
+    """Worker count for parallel grading: CPU count capped at 8, never above the task count."""
+    if count <= 1: return 1
+    return max(1, min(8, count, os.cpu_count() or 1))
+
+
+def grade_many(targets: list[Path], timeout: float, total_timeout: float, max_output: int,
+               jobs: int = 1) -> list[dict]:
+    """Grade exercises, preserving the given order.
+
+    Each grading run is an independent compile+run in its own temporary directory,
+    so a thread pool gives near-linear speedup: the waiting happens in child
+    processes and the GIL is released while they run.
+    """
+    if jobs <= 1 or len(targets) <= 1:
+        return [grade(directory, timeout, total_timeout, max_output) for directory in targets]
+    with ThreadPoolExecutor(max_workers=jobs) as pool:
+        return list(pool.map(lambda directory: grade(directory, timeout, total_timeout, max_output), targets))
+
+
 def target_list(args: argparse.Namespace) -> list[Path]:
     if getattr(args, "exercise", None):
         target = find_exercise(args.exercise)
         if target is None: raise ValueError(f"exercise not found: {args.exercise}")
         return [target]
-    return discover()
+    if getattr(args, "all", False):
+        return discover()
+    target = current_exercise_from_state(current_state(), discover())
+    return [target] if target else []
 
 
 def command_check(args: argparse.Namespace) -> int:
     current = current_state(); cfg = settings()
     try: targets = target_list(args)
     except ValueError as exc: print(str(exc), file=sys.stderr); return EXIT_USAGE
+    if not targets:
+        print("all exercises completed; use cstudy check --all to grade every exercise")
+        return EXIT_OK
+    if not getattr(args, "exercise", None) and not getattr(args, "all", False) and not args.json and not args.quiet:
+        print("checking the current exercise; use cstudy check --all to grade the whole library")
+    requested = getattr(args, "jobs", None)
+    jobs = default_jobs(len(targets)) if requested is None else max(1, int(requested))
+    if jobs > 1 and not args.json and not args.quiet:
+        print(f"grading {len(targets)} exercises with {jobs} worker(s)")
     failures = 0; results: list[dict] = []
-    for directory in targets:
-        result = grade(directory, args.timeout or float(cfg["timeout_seconds"]),
-                       args.total_timeout or float(cfg["total_timeout_seconds"]), int(cfg["max_output_bytes"]))
+    graded = grade_many(targets, args.timeout or float(cfg["timeout_seconds"]),
+                        args.total_timeout or float(cfg["total_timeout_seconds"]),
+                        int(cfg["max_output_bytes"]), jobs)
+    for directory, result in zip(targets, graded):
         log_result(result); record(directory, result, current); results.append(result)
         if not args.json:
             print_result(result, False, args.quiet)
@@ -706,8 +1010,15 @@ def command_validate(args: argparse.Namespace) -> int:
             if not (EXERCISES / identifier).is_dir():
                 issue(f"invalid: curriculum exercise missing: {identifier}")
     if getattr(args, "compile", False):
-        for directory in all_items:
-            compiled = compile_only(directory, float(getattr(args, "compile_timeout", 10.0)))
+        requested = getattr(args, "jobs", None)
+        jobs = default_jobs(len(all_items)) if requested is None else max(1, int(requested))
+        timeout = float(getattr(args, "compile_timeout", 10.0))
+        if jobs <= 1 or len(all_items) <= 1:
+            compiled_items = [compile_only(directory, timeout) for directory in all_items]
+        else:
+            with ThreadPoolExecutor(max_workers=jobs) as pool:
+                compiled_items = list(pool.map(lambda directory: compile_only(directory, timeout), all_items))
+        for directory, compiled in zip(all_items, compiled_items):
             if compiled["status"] != "passed":
                 issue(f"invalid: {exercise_id(directory)} {compiled['status']}: {compiled.get('error', compiled.get('stderr', '')).strip()}")
     if getattr(args, "json", False):
@@ -738,15 +1049,19 @@ def adjacent(directory: Path, step: int) -> Optional[Path]:
 
 def command_next(args: argparse.Namespace) -> int:
     current = current_state(); exercise = getattr(args, "exercise", None)
-    target = find_exercise(exercise) if exercise else next((p for p in discover() if not is_done(p, current)), None)
+    if exercise:
+        target = require_exercise(exercise)
+        if target is None: return EXIT_USAGE
+    else:
+        target = next((p for p in discover() if not is_done(p, current)), None)
     if target is None: print("all exercises completed"); return EXIT_OK
     set_current_exercise(target, current)
     print(f"next: {exercise_id(target)} - {metadata(target)['title']}"); return EXIT_OK
 
 
 def command_move(args: argparse.Namespace, step: int) -> int:
-    target = find_exercise(args.exercise)
-    if target is None: print(f"exercise not found: {args.exercise}", file=sys.stderr); return EXIT_USAGE
+    target = require_exercise(args.exercise)
+    if target is None: return EXIT_USAGE
     other = adjacent(target, step)
     if other is None: print("no adjacent exercise")
     else:
@@ -756,7 +1071,7 @@ def command_move(args: argparse.Namespace, step: int) -> int:
 
 
 def command_skip(args: argparse.Namespace) -> int:
-    target = find_exercise(args.exercise)
+    target = require_exercise(args.exercise)
     if target is None: return EXIT_USAGE
     current = current_state(); current.setdefault("exercises", {}).setdefault(exercise_id(target), {})["status"] = "skipped"
     next_target = next((item for item in discover() if not is_done(item, current) and item != target), None)
@@ -765,14 +1080,14 @@ def command_skip(args: argparse.Namespace) -> int:
 
 
 def command_status(args: argparse.Namespace) -> int:
-    if not args.exercise: return command_list(argparse.Namespace(all=False))
-    target = find_exercise(args.exercise)
+    if not args.exercise: return command_list(argparse.Namespace(all=False, json=False))
+    target = require_exercise(args.exercise)
     if target is None: return EXIT_USAGE
     print(json.dumps(current_state().get("exercises", {}).get(exercise_id(target), {}), ensure_ascii=False, indent=2)); return EXIT_OK
 
 
 def command_edit(args: argparse.Namespace) -> int:
-    target = find_exercise(args.exercise)
+    target = require_exercise(args.exercise)
     if target is None: return EXIT_USAGE
     source, _ = exercise_files(target)
     if source is None: return EXIT_USAGE
@@ -839,7 +1154,8 @@ def read_key(timeout: float = 0.1) -> Optional[str]:
             except (OSError, ValueError):
                 return None
             return {"H": "UP", "P": "DOWN", "K": "LEFT", "M": "RIGHT",
-                    "G": "HOME", "O": "END", "S": "DELETE"}.get(code, "")
+                    "G": "HOME", "O": "END", "S": "DELETE",
+                    "I": "PGUP", "Q": "PGDN"}.get(code, "")
         if key == "\x1b":
             # Windows Terminal and some IDE consoles report ANSI arrows.
             sequence = ""
@@ -847,7 +1163,8 @@ def read_key(timeout: float = 0.1) -> Optional[str]:
             while msvcrt.kbhit() and time.monotonic() < deadline:
                 sequence += msvcrt.getwch()
             return {"[A": "UP", "[B": "DOWN", "[C": "RIGHT", "[D": "LEFT",
-                    "[H": "HOME", "[F": "END", "[3~": "DELETE"}.get(sequence, "ESC")
+                    "[H": "HOME", "[F": "END", "[3~": "DELETE",
+                    "[5~": "PGUP", "[6~": "PGDN"}.get(sequence, "ESC")
         return "CTRL-C" if key == "\x03" else key
     if not sys.stdin.isatty(): time.sleep(timeout); return None
     ready, _, _ = select.select([sys.stdin], [], [], timeout)
@@ -861,7 +1178,8 @@ def read_key(timeout: float = 0.1) -> Optional[str]:
             if not more: break
             sequence += sys.stdin.read(1)
         return {"[A": "UP", "[B": "DOWN", "[C": "RIGHT", "[D": "LEFT",
-                "[H": "HOME", "[F": "END", "[3~": "DELETE"}.get(sequence, "ESC")
+                "[H": "HOME", "[F": "END", "[3~": "DELETE",
+                "[5~": "PGUP", "[6~": "PGDN"}.get(sequence, "ESC")
     return key
 
 
@@ -895,7 +1213,7 @@ def read_line(prompt: str = "") -> str:
 
 def progress_bar(state: dict, exercises: Optional[list[Path]] = None, width: int = 30) -> str:
     exercises = exercises if exercises is not None else discover(); total = len(exercises)
-    completed = sum(is_done(item, state) for item in exercises); filled = int(width * completed / total) if total else width
+    completed = len(done_set(state, exercises)) if total else 0; filled = int(width * completed / total) if total else width
     return f"Progress: [{'#' * filled}{'-' * (width - filled)}] {completed}/{total}"
 
 
@@ -943,51 +1261,316 @@ def enter_alternate_screen() -> None:
     _ALTERNATE_SCREEN = True
 
 
-def render_watch_screen(target: Path, result: Optional[dict], hint: bool = False) -> None:
-    state = current_state(); exercises = discover()
-    width = max(18, min(48, shutil.get_terminal_size((80, 24)).columns - 30))
-    clear_screen()
-    print(paint(f"CStudy {VERSION}  |  C language exercises", "cyan"))
-    print(paint(progress_bar(state, exercises, width), "bold"))
-    print(f"\nCurrent: {paint(exercise_id(target), 'bold')}  {metadata(target)['title']} [{progress_status(target, state)}]")
-    source, _ = exercise_files(target)
-    if source: print(f"File: {hyperlink(source)}")
+def terminal_size() -> tuple[int, int]:
+    size = shutil.get_terminal_size((80, 24))
+    return max(12, size.lines), max(40, size.columns)
+
+
+def fit_line(text: str, width: int) -> str:
+    return console_ux.pad_to(console_ux.clip_visible(text, width), width)
+
+
+def draw_frame(lines: list[str], width: int) -> None:
+    """Redraw in place: home, overwrite every row, erase whatever is left."""
+    parts = ["\x1b[H"]
+    for index, line in enumerate(lines):
+        parts.append("\x1b[K" + fit_line(line, width))
+        if index < len(lines) - 1: parts.append("\n")
+    parts.append("\x1b[J")
+    sys.stdout.write("".join(parts)); sys.stdout.flush()
+
+
+_RENDER_CACHE: dict[tuple, list[str]] = {}
+_VIEWPORT_HEIGHT = 10
+_VIEWPORT_MAX_SCROLL = 0
+
+
+def rendered_description(target: Path, width: int) -> list[str]:
+    """Markdown-rendered description, cached until the file or width changes."""
     description = target / "description.md"
-    if description.exists():
-        print(paint("\nDescription:", "cyan"))
-        print(console_ux.render_markdown(read_text(description), width=console_ux.terminal_width()))
-    if result:
-        status = result.get("status", "pending")
-        label, colour = ("PASS", "green") if status == "passed" else (("WARNING", "yellow") if status == "incomplete_marker" else ("ERROR", "red"))
-        cases = result.get("cases", []); passed_cases = sum(case.get("passed", False) for case in cases)
-        print(f"\n{paint(label, colour)} {status} ({result.get('duration_ms', 0)} ms)  {passed_cases}/{len(cases)} cases passed")
-        if result.get("error"): print(paint(str(result["error"]), "yellow"))
-        compile_stderr = result.get("compile", {}).get("stderr", "")
-        if compile_stderr: print(paint(compile_stderr.rstrip(), "yellow"))
-        for index, case in enumerate(result.get("cases", []), 1):
-            actual = case.get("actual", "")
-            print(f"\n{paint(f'Case {index}: PASS' if case.get('passed') else f'Case {index}: ERROR', 'green' if case.get('passed') else 'red')}")
-            if actual or result.get("status") == "passed":
-                print("Output:")
-                print(actual if actual else "<empty>")
-            if case.get("stderr"):
-                print(paint("Warning (stderr):", "yellow"))
-                print(case["stderr"].rstrip())
-            if not case.get("passed"):
-                print("Expected:")
-                print(case.get("expected", "") or "<empty>")
-    if hint:
-        print(paint("\nHint:", "yellow"))
-        if description.exists():
-            print(console_ux.render_markdown(read_text(description), width=console_ux.terminal_width()))
-        _, test_file = exercise_files(target)
-        if test_file:
-            cases = parse_tests(test_file)
-            if cases:
-                print(paint("Example input/output:", "yellow"))
-                print(f"input: {cases[0].input or '<empty>'}")
-                print(f"expected: {cases[0].expected or '<empty>'}")
-    print("\n[n] next  [r] run  [h] hint  [a] AI chat  [l] list  [x] reset  [q] quit")
+    if not description.exists(): return []
+    try: stamp = description.stat().st_mtime_ns
+    except OSError: stamp = 0
+    key = (str(description), stamp, width)
+    cached = _RENDER_CACHE.get(key)
+    if cached is not None: return cached
+    lines = console_ux.render_markdown(read_text(description), width=width).split("\n")
+    if len(_RENDER_CACHE) > 16: _RENDER_CACHE.clear()
+    _RENDER_CACHE[key] = lines
+    return lines
+
+
+def hint_block(target: Path, result: Optional[dict], width: int) -> list[str]:
+    """Hint view: the description hint section plus one concrete case."""
+    lines = rendered_description(target, width)
+    start = next((index for index, line in enumerate(lines) if line.strip().startswith("\u63d0\u793a")), None)
+    block = list(lines[start:] if start is not None else lines)
+    case = next((item for item in (result or {}).get("cases", []) if not item.get("passed")), None)
+    if case is None:
+        _, tests = exercise_files(target)
+        parsed = parse_tests(tests) if tests else []
+        case = {"input": parsed[0].input, "expected": parsed[0].expected, "passed": False} if parsed else None
+    if case is not None:
+        def flat(value) -> str:
+            text = str(value if value is not None else "")
+            return text.replace("\n", " | ") or "<\u7a7a>"
+        block += ["", paint("\u7b2c\u4e00\u4e2a\u7528\u4f8b\uff1a", "yellow"),
+                  "  \u8f93\u5165: " + flat(case.get("input")),
+                  "  \u671f\u671b: " + flat(case.get("expected"))]
+        if not case.get("passed", True):
+            block.append("  \u5b9e\u9645: " + flat(case.get("actual")))
+    return block
+
+
+def result_lines(result: Optional[dict], width: int) -> list[str]:
+    """Compact grading result: one line per case, details only for failures."""
+    if not result: return []
+    status = result.get("status", "pending")
+    label, colour = result_label(status)
+    cases = result.get("cases") or []
+    passed = sum(1 for case in cases if case.get("passed"))
+    lines = [paint(f"{label} {status} ({result.get('duration_ms', 0)} ms)  {passed}/{len(cases)} cases passed", colour)]
+    if result.get("error"): lines.append(paint(str(result["error"]), "yellow"))
+    stderr = (result.get("compile") or {}).get("stderr", "")
+    if stderr:
+        lines.extend(paint("  " + line, "yellow") for line in stderr.rstrip().split("\n")[:3])
+    for index, case in enumerate(cases, 1):
+        lines.extend(case_lines(case, index, compact=True))
+    return lines
+
+
+def keys_line(width: int) -> str:
+    full = "[n] \u4e0b\u4e00\u9898  [r] \u91cd\u8dd1  [h] \u63d0\u793a  [e] \u7f16\u8f91  [a] AI \u5bf9\u8bdd  [l] \u5217\u8868  [x] \u91cd\u7f6e  [:] \u547d\u4ee4  [q] \u9000\u51fa  [\u2191\u2193 PgUp/PgDn] \u9898\u9762"
+    short = "[n] \u4e0b\u4e00\u9898  [r] \u91cd\u8dd1  [h] \u63d0\u793a  [:] \u547d\u4ee4  [q] \u9000\u51fa"
+    return full if console_ux.visible_width(full) <= width else short
+
+
+def last_status_line(result: Optional[dict]) -> str:
+    if not result: return paint("\u5c31\u7eea \u00b7 \u6309 r \u91cd\u65b0\u5224\u5b9a", "dim")
+    cases = result.get("cases") or []
+    passed = sum(1 for case in cases if case.get("passed"))
+    stamp = result.get("at") or time.strftime("%H:%M:%S")
+    return paint(f"\u4e0a\u6b21\u5224\u5b9a {stamp}  {passed}/{len(cases)} \u7528\u4f8b\u901a\u8fc7  {result.get('duration_ms', 0)} ms", "dim")
+
+
+WATCH_COMMANDS = [
+    ("/help", "\u663e\u793a\u547d\u4ee4\u4e0e\u5feb\u6377\u952e", False),
+    ("/hint", "\u9898\u9762/\u63d0\u793a\u5207\u6362", False),
+    ("/next", "\u8df3\u5230\u4e0b\u4e00\u9053\u672a\u5b8c\u6210\u9898", False),
+    ("/run", "\u7acb\u5373\u91cd\u65b0\u7f16\u8bd1\u5224\u5b9a", False),
+    ("/list", "\u6253\u5f00\u7ec3\u4e60\u5217\u8868", False),
+    ("/goto", "\u8df3\u5230\u6307\u5b9a\u9898\u76ee", True),
+    ("/skip", "\u8df3\u8fc7\u5f53\u524d\u9898\u5e76\u524d\u8fdb", False),
+    ("/reset", "\u6062\u590d\u521d\u59cb\u4ee3\u7801", False),
+    ("/edit", "\u7528\u7f16\u8f91\u5668\u6253\u5f00 Ques.c", False),
+    ("/ai", "\u5c31\u5f53\u524d\u9898\u5f00\u542f AI \u5bf9\u8bdd", False),
+    ("/follow", "\u5f00\u5173\u201c\u8ddf\u968f\u6700\u8fd1\u7f16\u8f91\u7684\u6587\u4ef6\u201d", False),
+    ("/quit", "\u9000\u51fa\u5b66\u4e60\u754c\u9762", False),
+]
+
+#: One-letter aliases accepted in the command prompt (the plain keys use these too).
+WATCH_ALIASES = {"h": "hint", "n": "next", "r": "run", "l": "list", "s": "skip",
+                 "x": "reset", "e": "edit", "a": "ai", "f": "follow", "q": "quit",
+                 "?": "help"}
+
+#: Verbs the watch screen can execute; WATCH_COMMANDS must stay a subset of this.
+WATCH_ACTIONS = {"help", "hint", "next", "run", "list", "goto", "skip", "reset",
+                 "edit", "ai", "follow", "quit"}
+
+
+def parse_watch_command(text: str) -> tuple[str, str]:
+    """Split a typed command into (verb, argument), mapping aliases to verbs.
+
+    Accepts "/hint", ":hint", "hint" and the one-letter aliases, so the prompt can
+    be driven by full commands or by the same letters the single keys use.
+    """
+    cleaned = text.strip().lstrip(":").lstrip("/").strip()
+    if not cleaned: return "", ""
+    parts = cleaned.split(None, 1)
+    verb = parts[0].lower()
+    argument = parts[1].strip() if len(parts) > 1 else ""
+    return WATCH_ALIASES.get(verb, verb), argument
+
+
+def latest_modified_exercise(exercises: list[Path]) -> Optional[Path]:
+    """Exercise whose source file was modified most recently (follow mode)."""
+    newest: Optional[Path] = None; newest_stamp = -1
+    for directory in exercises:
+        source, _ = exercise_files(directory)
+        if source is None: continue
+        try: stamp = source.stat().st_mtime_ns
+        except OSError: continue
+        if stamp > newest_stamp: newest, newest_stamp = directory, stamp
+    return newest
+
+
+def normalise_exercise_hint(text: str) -> str:
+    """Turn an editor-supplied path or id into an exercise id.
+
+    Accepts "02-basics/hello", "Exercises/02-basics/hello", an absolute path to
+    the exercise directory or to its Ques.c, and Windows separators.
+    """
+    cleaned = text.strip().strip('"').replace("\\", "/")
+    if "/Exercises/" in cleaned:
+        cleaned = cleaned.split("/Exercises/", 1)[1]
+    elif cleaned.startswith("Exercises/"):
+        cleaned = cleaned[len("Exercises/"):]
+    for suffix in ("/Ques.c", "/Ques.c.bak"):
+        if cleaned.endswith(suffix):
+            cleaned = cleaned[: -len(suffix)]
+    return cleaned.strip("/")
+
+
+def active_file_exercise(path: Path) -> Optional[Path]:
+    """Exercise named by the editor hook file (default .cstudy/active)."""
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not text:
+        return None
+    hint = normalise_exercise_hint(text)
+    return find_exercise(hint) if hint else None
+
+
+def follow_target(exercises: list[Path], target: Path, source: Optional[Path],
+                  last_stamp: int) -> Optional[Path]:
+    """Exercise whose file was edited most recently, if it is newer than ours.
+
+    The stamp guard keeps the screen from bouncing between two files when both
+    were touched recently.
+    """
+    candidate = latest_modified_exercise(exercises)
+    if candidate is None or candidate == target:
+        return None
+    candidate_source, _ = exercise_files(candidate)
+    try: candidate_stamp = candidate_source.stat().st_mtime_ns if candidate_source else 0
+    except OSError: candidate_stamp = 0
+    try: current_stamp = source.stat().st_mtime_ns if source else 0
+    except OSError: current_stamp = 0
+    if candidate_stamp > current_stamp and candidate_stamp != last_stamp:
+        return candidate
+    return None
+
+
+def watch_help_lines() -> list[str]:
+    """Body shown by the help command: commands first, then the key shortcuts."""
+    lines = [paint("\u547d\u4ee4\uff08\u6309 : \u6216 / \u6253\u5f00\u547d\u4ee4\u63d0\u793a\u7b26\uff0c\u56de\u8f66\u6267\u884c\uff1b\u8f93\u5165 / \u53ef\u8865\u5168\uff09", "cyan"), ""]
+    for name, description, takes_argument in WATCH_COMMANDS:
+        lines.append("  " + name.ljust(10) + ("<arg>  " if takes_argument else "       ") + description)
+    lines += ["", paint("\u5355\u952e\u5feb\u6377\u65b9\u5f0f", "cyan"), "",
+              "  n \u4e0b\u4e00\u9898   r \u91cd\u65b0\u5224\u5b9a   h \u9898\u9762/\u63d0\u793a   e \u7f16\u8f91   s \u8df3\u8fc7   a AI \u5bf9\u8bdd",
+              "  l \u5217\u8868   x \u91cd\u7f6e   f \u8ddf\u968f\u5f00\u5173   q \u9000\u51fa   \u2191\u2193/j k \u6eda\u52a8   PgUp/PgDn \u7ffb\u9875   g/G \u9996\u5c3e"]
+    return lines
+
+
+def watch_command_prompt() -> Optional[str]:
+    """One-line command prompt with completion, drawn over the status row."""
+    editor = console_ux.LineEditor(prompt="/", commands=WATCH_COMMANDS)
+    editor.buffer = "/"; editor.caret = 1
+
+    def draw() -> None:
+        _rows, cols = terminal_size()
+        status_row = max(1, _rows - 1)
+        menu = (console_ux.menu_rows(WATCH_COMMANDS, editor.buffer, editor.menu_index, cols)
+                if editor.buffer.startswith("/") else [])
+        parts = []
+        top = max(1, status_row - len(menu))
+        for index, line in enumerate(menu):
+            row = top + index
+            if row >= status_row: break
+            parts.append(f"\x1b[{row};1H\x1b[K" + fit_line(line, cols))
+        parts.append(f"\x1b[{status_row};1H\x1b[K" + fit_line(":" + editor.buffer, cols))
+        parts.append(f"\x1b[{status_row};{min(cols, editor.caret + 2)}H")
+        sys.stdout.write("".join(parts)); sys.stdout.flush()
+
+    draw()
+    while True:
+        action, submitted = editor.feed(read_key(0.1))
+        if action == "submit": return submitted
+        if action in {"cancel", "interrupt", "exit"}: return None
+        if action: draw()
+
+
+def build_watch_frame(target: Path, state: dict, exercises: list[Path], result: Optional[dict],
+                      hint: bool, scroll: int, status: str, follow: bool = True,
+                      show_help: bool = False) -> list[str]:
+    """Fixed header, scrollable body, compact result block, fixed footer."""
+    global _VIEWPORT_HEIGHT, _VIEWPORT_MAX_SCROLL
+    rows, cols = terminal_size()
+    bar_width = max(18, min(48, cols - 30))
+    title = paint(f"CStudy {VERSION}  |  C \u8bed\u8a00\u7ec3\u4e60", "cyan")
+    badge = paint("[跟随]" if follow else "[跟随:关]", "dim")
+    gap = max(1, cols - console_ux.visible_width(title) - console_ux.visible_width(badge))
+    header = [title + " " * gap + badge,
+              paint(progress_bar(state, exercises, bar_width), "bold"),
+              f"\u5f53\u524d: {paint(exercise_id(target), 'bold')}  {metadata(target)['title']} [{progress_status(target, state)}]"]
+    source, _ = exercise_files(target)
+    if source: header.append("\u6e90\u7801: " + hyperlink(source))
+
+    if show_help: body = watch_help_lines()
+    elif hint: body = hint_block(target, result, cols)
+    else: body = rendered_description(target, cols)
+    result_block = result_lines(result, cols)
+    footer = [status, keys_line(cols)]
+    fixed = len(header) + len(footer) + 1 + (1 if result_block else 0)
+    room = max(3, rows - fixed)
+    if result_block:
+        result_height = min(len(result_block), max(2, room // 2))
+        body_height = max(1, room - result_height)
+    else:
+        result_height = 0
+        body_height = room
+
+    total_body = len(body)
+    max_scroll = max(0, total_body - body_height)
+    scroll = max(0, min(scroll, max_scroll))
+    _VIEWPORT_HEIGHT = body_height
+    _VIEWPORT_MAX_SCROLL = max_scroll
+    window = body[scroll:scroll + body_height]
+
+    label = "\u5e2e\u52a9" if show_help else ("\u63d0\u793a" if hint else "\u9898\u9762")
+    if max_scroll:
+        span = f"{scroll + 1}-{scroll + len(window)}/{total_body} \u884c  PgUp/PgDn \u7ffb\u9875"
+    else:
+        span = f"{total_body} \u884c"
+    lines = list(header)
+    lines.append(paint("-" * max(1, cols - console_ux.visible_width(span) - 4) + f" {label} {span} ", "dim"))
+    lines.extend(window + [""] * (body_height - len(window)))
+    if result_height:
+        lines.append(paint("-" * cols, "dim"))
+        shown = result_block[:result_height]
+        if len(result_block) > result_height:
+            shown = shown[:-1] + [paint(f"  \u2026 \u8fd8\u6709 {len(result_block) - result_height + 1} \u884c\u7ed3\u679c", "dim")]
+        lines.extend(shown + [""] * (result_height - len(shown)))
+    lines.extend(footer)
+    return lines[:rows]
+
+
+def render_watch_screen(target: Path, result: Optional[dict], hint: bool = False, scroll: int = 0,
+                        follow: bool = True, show_help: bool = False,
+                        status: Optional[str] = None) -> None:
+    state = current_state(); exercises = discover()
+    _rows, cols = terminal_size()
+    draw_frame(build_watch_frame(target, state, exercises, result, hint, scroll,
+                                 status if status is not None else last_status_line(result),
+                                 follow, show_help), cols)
+
+
+def spin_status(stop: threading.Event, row: int, label: str) -> None:
+    """Animate the pinned status row while a blocking grading run is in flight."""
+    started = time.monotonic()
+    while not stop.is_set():
+        elapsed = time.monotonic() - started
+        frame = paint(console_ux.spinner_frame(elapsed), "cyan")
+        line = f"{frame} {label} ({elapsed:.1f}s)"
+        try:
+            _rows, cols = terminal_size()
+            sys.stdout.write(f"\x1b[{max(1, row)};1H\x1b[K" + fit_line(line, cols))
+            sys.stdout.flush()
+        except (OSError, ValueError):
+            return
+        stop.wait(0.08)
 
 
 def list_tui() -> Optional[Path]:
@@ -995,22 +1578,33 @@ def list_tui() -> Optional[Path]:
     current_id = state.get("current")
     selected = next((index for index, item in enumerate(exercises) if exercise_id(item) == current_id), 0)
     def visible():
-        return [p for p in exercises if (mode == "all" or (mode == "done" and is_done(p, state)) or (mode == "pending" and not is_done(p, state))) and (not query or query.lower() in (exercise_id(p) + " " + metadata(p)["title"]).lower())]
+        done = done_set(state, exercises)
+        return [p for p in exercises if (mode == "all" or (mode == "done" and exercise_id(p) in done) or (mode == "pending" and exercise_id(p) not in done)) and (not query or query.lower() in (exercise_id(p) + " " + metadata(p)["title"]).lower())]
     dirty = True
     with raw_terminal():
         while True:
             items = visible(); selected = min(selected, max(0, len(items) - 1))
             if dirty:
-                clear_screen()
-                print("CStudy exercises  (j/k move, d/p filter, s search, Enter select, q back)\n")
-                height = max(5, shutil.get_terminal_size((80, 24)).lines - 6)
+                rows, cols = terminal_size()
+                done = done_set(state, exercises)
+                height = max(5, rows - 4)
                 start = max(0, min(selected - height // 2, len(items) - height))
                 end = min(len(items), start + height)
-                if start > 0: print(paint("... more above ...", "dim"))
+                header = ["CStudy \u7ec3\u4e60\u5217\u8868  (j/k \u79fb\u52a8, d/p \u7b5b\u9009, s \u641c\u7d22, Enter \u9009\u62e9, q \u8fd4\u56de)",
+                          paint(f"\u5df2\u5b8c\u6210 {len(done)}/{len(exercises)} \u00b7 \u7b5b\u9009={mode}" +
+                                (f" \u00b7 \u641c\u7d22={query}" if query else ""), "dim")]
+                body: list[str] = []
+                if start > 0: body.append(paint("... more above ...", "dim"))
+                id_width = min(30, max(18, cols // 2 - 6))
                 for index, item in enumerate(items[start:end], start):
-                    mark = "DONE" if is_done(item, state) else "    "; cursor = ">" if index == selected else " "
-                    print(f"{cursor} {index + 1:>2}. [{mark}] {exercise_id(item)} - {metadata(item)['title']}")
-                if end < len(items): print(paint("... more below ...", "dim"))
+                    meta = metadata(item)
+                    mark = "DONE" if exercise_id(item) in done else "    "
+                    cursor = ">" if index == selected else " "
+                    row = f"{cursor} {index + 1:>3}. [{mark}] " + console_ux.pad_to(exercise_id(item), id_width)
+                    body.append(row + f" {meta['title']} [{meta['difficulty']}]")
+                if end < len(items): body.append(paint("... more below ...", "dim"))
+                clear_screen()
+                for line in header + body: print(fit_line(line, cols))
                 dirty = False
             key = read_key()
             if key in {"q", "ESC", "CTRL-C"}: return None
@@ -1032,79 +1626,179 @@ def list_tui() -> Optional[Path]:
 
 def watch_tui(args: argparse.Namespace, target: Path) -> int:
     state = current_state(); set_current_exercise(target, state); source, _ = exercise_files(target); assert source
-    result: dict = {}; hint = False; previous = 0
+    result: dict = {}; hint = False; show_help = False; scroll = 0; previous = 0
+    dirty = True
+    follow = not getattr(args, "no_follow", False)
+    active_path = Path(getattr(args, "active_file", None) or (STATE_DIR / "active"))
+    followed_stamp = 0; last_scan = 0.0
+    note = ""; note_until = 0.0
 
     def run_current() -> None:
         nonlocal result, previous
-        result = grade(target, args.timeout, args.total_timeout, int(settings()["max_output_bytes"]))
+        stop = threading.Event(); thread = None
+        if sys.stdout.isatty():
+            _rows, _cols = terminal_size()
+            thread = threading.Thread(target=spin_status, args=(stop, _rows - 1, "\u7f16\u8bd1\u5224\u5b9a\u4e2d"), daemon=True)
+            thread.start()
+        try:
+            result = grade(target, args.timeout, args.total_timeout, int(settings()["max_output_bytes"]))
+        finally:
+            stop.set()
+            if thread is not None: thread.join(timeout=0.5)
+        result["at"] = time.strftime("%H:%M:%S")
         log_result(result); current = current_state(); record(target, result, current); save_state(current)
         previous = source.stat().st_mtime_ns
 
+    def select(target_path: Path, open_in_editor: bool = True) -> None:
+        nonlocal target, source, scroll
+        target = target_path; source, _ = exercise_files(target); assert source
+        scroll = 0; set_current_exercise(target)
+        if open_in_editor: open_editor(source, args)
+        run_current()
+
     def move_next() -> bool:
-        nonlocal target, source
         if result.get("status") != "passed":
             return False
         next_target = next((item for item in discover() if not is_done(item, current_state()) and item != target), None)
         if next_target is None:
             return False
-        target = next_target; source, _ = exercise_files(target); assert source
-        set_current_exercise(target); open_editor(source, args); run_current()
+        select(next_target)
+        return True
+
+    def set_note(text: str, seconds: float = 5.0) -> None:
+        nonlocal note, note_until
+        note = text; note_until = time.monotonic() + seconds
+
+    def status_text() -> Optional[str]:
+        if note and time.monotonic() < note_until: return paint(note, "yellow")
+        return None
+
+    def dispatch(verb: str, argument: str = "") -> bool:
+        """Run one action; returns False when the watch screen should exit.
+
+        Both the single keys and the typed commands go through here, so the two
+        input styles can never drift apart.
+        """
+        nonlocal hint, show_help, dirty, follow, target
+        if verb in {"quit", "exit"}: return False
+        if verb == "help":
+            show_help = True; dirty = True
+        elif verb == "hint":
+            hint = not hint; show_help = False; dirty = True
+        elif verb == "next":
+            if not move_next(): set_note("\u5f53\u524d\u9898\u8fd8\u6ca1\u901a\u8fc7\uff0c\u5148\u628a\u5b83\u505a\u5bf9\uff08\u6216\u7528 skip\uff09")
+            dirty = True
+        elif verb == "run":
+            run_current(); dirty = True
+            if move_next(): dirty = True
+        elif verb == "list":
+            chosen = list_tui()
+            if chosen: select(chosen); dirty = True
+        elif verb == "goto":
+            if not argument:
+                set_note("\u7528\u6cd5\uff1agoto <\u9898\u53f7\u6216\u7f16\u53f7>\uff0c\u4f8b\u5982 goto 12")
+            else:
+                found = find_exercise(argument)
+                if found is None: set_note(f"\u627e\u4e0d\u5230\u9898\u76ee\uff1a{argument}")
+                else: select(found); set_note(f"\u5df2\u5207\u6362\u5230 {exercise_id(found)}")
+            dirty = True
+        elif verb == "skip":
+            current = current_state()
+            current.setdefault("exercises", {}).setdefault(exercise_id(target), {})["status"] = "skipped"
+            save_state(current)
+            next_target = next((item for item in discover() if not is_done(item, current) and item != target), None)
+            if next_target is None: set_note("\u6ca1\u6709\u5176\u4ed6\u672a\u5b8c\u6210\u9898\u4e86"); dirty = True
+            else: select(next_target); set_note(f"\u5df2\u8df3\u8fc7\uff0c\u5207\u5230 {exercise_id(next_target)}"); dirty = True
+        elif verb == "reset":
+            answer = read_line("\nReset this exercise? [y/N] ")
+            if answer.lower() == "y":
+                backup = target / "Ques.c.bak"
+                if backup.exists(): shutil.copyfile(backup, source)
+                current = current_state(); current.setdefault("exercises", {}).pop(exercise_id(target), None); save_state(current)
+                run_current(); set_note("\u5df2\u6062\u590d\u521d\u59cb\u4ee3\u7801")
+            dirty = True
+        elif verb == "edit":
+            if not open_editor(source, args): set_note("\u6ca1\u6709\u914d\u7f6e\u7f16\u8f91\u5668\uff08\u8bbe\u7f6e CSTUDY_EDIT_CMD/EDITOR\uff09")
+        elif verb == "ai":
+            # The alternate screen keeps no history, so run the chat in the normal
+            # buffer where the transcript can be scrolled back.
+            leave_alternate_screen()
+            code = chat_session(target, timeout=float(getattr(args, "ai_timeout", 60.0)), opening=HINT_REQUEST)
+            if code != EXIT_OK: read_line("\nPress Enter to return...")
+            enter_alternate_screen()
+            dirty = True
+        elif verb == "follow":
+            follow = not follow
+            set_note("\u8ddf\u968f\u5f00\u5173\uff1a" + ("\u5f00" if follow else "\u5173"))
+            dirty = True
+        else:
+            set_note(f"\u672a\u77e5\u547d\u4ee4\uff1a{verb}\uff08\u8f93\u5165 help \u67e5\u770b\u5168\u90e8\uff09")
         return True
 
     run_current(); open_editor(source, args); move_next()
     try:
         with alternate_screen(), raw_terminal():
-            dirty = True
             while True:
+                rows, cols = terminal_size()
                 if dirty:
-                    render_watch_screen(target, result, hint); dirty = False
+                    render_watch_screen(target, result, hint, scroll, follow, show_help, status_text())
+                    dirty = False
                 key = read_key(getattr(args, "interval", .1))
+                exiting = False
                 if key in {"q", "CTRL-C"}:
-                    clear_screen(); print("CStudy stopped."); return EXIT_OK
-                if key == "r":
-                    run_current(); dirty = True
-                    if move_next(): dirty = True
-                elif key == "h":
-                    hint = not hint; dirty = True
-                elif key == "a":
-                    # The alternate screen keeps no history, so run the chat in
-                    # the normal buffer where the transcript can be scrolled back.
-                    leave_alternate_screen()
-                    code = chat_session(target, timeout=float(getattr(args, "ai_timeout", 60.0)),
-                                        opening=HINT_REQUEST)
-                    if code != EXIT_OK:
-                        read_line("\nPress Enter to return...")
-                    enter_alternate_screen()
+                    exiting = True
+                elif key in {"PGDN", "j", "DOWN"}:
+                    step = _VIEWPORT_HEIGHT if key == "PGDN" else 1
+                    scroll = min(scroll + step, _VIEWPORT_MAX_SCROLL); dirty = True
+                elif key in {"PGUP", "k", "UP"}:
+                    step = _VIEWPORT_HEIGHT if key == "PGUP" else 1
+                    scroll = max(0, scroll - step); dirty = True
+                elif key in {"g", "HOME"}:
+                    scroll = 0; dirty = True
+                elif key in {"G", "END"}:
+                    scroll = _VIEWPORT_MAX_SCROLL; dirty = True
+                elif key in {":", "/"}:
+                    typed = watch_command_prompt()
+                    if typed:
+                        verb, argument = parse_watch_command(typed)
+                        if verb and not dispatch(verb, argument): exiting = True
                     dirty = True
-                elif key == "l":
-                    chosen = list_tui()
-                    if chosen:
-                        target = chosen; source, _ = exercise_files(target); assert source; set_current_exercise(target); open_editor(source, args)
-                        run_current(); dirty = True
-                        if move_next(): dirty = True
-                elif key == "n" and result.get("status") == "passed":
-                    if move_next(): dirty = True
-                elif key == "x":
-                    answer = read_line("\nReset this exercise? [y/N] ")
-                    if answer.lower() == "y":
-                        backup = target / "Ques.c.bak"
-                        if backup.exists(): shutil.copyfile(backup, source)
-                        current = current_state(); current.setdefault("exercises", {}).pop(exercise_id(target), None); save_state(current)
-                        run_current(); dirty = True
-                if source.stat().st_mtime_ns != previous or key in {"r", "n", "x"}:
+                elif key and key in WATCH_ALIASES:
+                    if not dispatch(WATCH_ALIASES[key]): exiting = True
+                if exiting:
+                    clear_screen(); print("CStudy stopped."); return EXIT_OK
+                if source.stat().st_mtime_ns != previous:
                     run_current(); dirty = True
                     if result.get("status") == "passed" and move_next(): dirty = True
+                if note and time.monotonic() >= note_until:
+                    note = ""; dirty = True
+                now = time.monotonic()
+                if now - last_scan > 0.5:
+                    last_scan = now
+                    # an explicit editor hook (.cstudy/active) wins over mtime
+                    chosen = active_file_exercise(active_path)
+                    if chosen is None and follow:
+                        chosen = follow_target(discover(), target, source, followed_stamp)
+                        if chosen is not None:
+                            candidate_source, _ = exercise_files(chosen)
+                            try: followed_stamp = candidate_source.stat().st_mtime_ns if candidate_source else 0
+                            except OSError: followed_stamp = 0
+                    if chosen is not None and chosen != target:
+                        select(chosen, open_in_editor=False)
+                        set_note(f"\u5df2\u8ddf\u968f\u5230 {exercise_id(chosen)}")
+                        dirty = True
     except KeyboardInterrupt:
         clear_screen(); print("CStudy stopped."); return EXIT_OK
 
 
 def command_watch(args: argparse.Namespace) -> int:
-    target = find_exercise(args.exercise) if args.exercise else None
-    if target is None and not args.exercise:
+    target = require_exercise(args.exercise) if args.exercise else None
+    if args.exercise and target is None: return EXIT_USAGE
+    if target is None:
         state = current_state()
         target = next((item for item in discover() if not is_done(item, state)), None)
     if target is None:
-        print(f"exercise not found: {args.exercise}", file=sys.stderr); return EXIT_USAGE
+        print("all exercises completed"); return EXIT_OK
     if sys.stdin.isatty() and sys.stdout.isatty() and not getattr(args, "once", False):
         try:
             return watch_tui(args, target)
@@ -1190,240 +1884,6 @@ def command_doctor(args: argparse.Namespace) -> int:
     return EXIT_OK if report["status"] == "ready" else EXIT_FAILED
 
 
-def extract_ai_content(body: dict, api_mode: str) -> str:
-    if api_mode == "responses":
-        content = body.get("output_text")
-        if isinstance(content, str) and content:
-            return content
-        fragments = []
-        for item in body.get("output", []):
-            for part in item.get("content", []):
-                if isinstance(part.get("text"), str):
-                    fragments.append(part["text"])
-        return "".join(fragments)
-    content = body["choices"][0]["message"]["content"]
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        return "".join(str(part.get("text", "")) for part in content if isinstance(part, dict))
-    return ""
-
-
-def api_error_message(raw: bytes) -> str:
-    text = raw.decode("utf-8", "replace").strip()
-    if not text:
-        return ""
-    try:
-        body = json.loads(text)
-        error = body.get("error", body) if isinstance(body, dict) else body
-        if isinstance(error, dict):
-            return str(error.get("message") or error.get("detail") or error.get("code") or text)
-        return str(error)
-    except json.JSONDecodeError:
-        return text[:1000]
-
-
-class AiRequestError(Exception):
-    """One failed AI request, carrying ready-to-print error lines."""
-
-    def __init__(self, lines: list[str], code: int = 4) -> None:
-        super().__init__(lines[0] if lines else "AI request failed")
-        self.lines = lines
-        self.code = code
-
-
-def build_ai_payload(model: str, api_mode: str, messages: list[dict]) -> dict:
-    """Translate a role/content conversation into the provider's request shape."""
-    if api_mode == "responses":
-        return {"model": model, "input": [
-            {"role": message["role"],
-             "content": [{"type": "output_text" if message["role"] == "assistant" else "input_text",
-                          "text": message["content"]}]}
-            for message in messages]}
-    return {"model": model, "messages": messages}
-
-
-def ai_endpoint(api_mode: str) -> str:
-    return "/responses" if api_mode == "responses" else "/chat/completions"
-
-
-class AiCancelled(Exception):
-    """Raised when the user interrupts an in-flight request."""
-
-
-def extract_reasoning(body: dict, api_mode: str) -> str:
-    """Reasoning text that some providers return next to the answer."""
-    if api_mode == "responses":
-        return ""
-    try:
-        message = body["choices"][0]["message"]
-    except (KeyError, IndexError, TypeError):
-        return ""
-    for key in ("reasoning_content", "reasoning"):
-        value = message.get(key)
-        if isinstance(value, str):
-            return value
-    return ""
-
-
-def read_ai_stream(response, api_mode: str, on_delta=None, on_reasoning=None, cancel=None) -> str:
-    """Read an SSE event stream, tolerating a gateway that ignores stream=true.
-
-    Reasoning deltas (DeepSeek reasoning_content, Responses reasoning summaries)
-    go to on_reasoning so the caller can show the thinking process.
-    """
-    def interrupted() -> None:
-        if cancel is not None and cancel.is_set():
-            raise AiCancelled()
-
-    first = ""
-    for raw in response:
-        interrupted()
-        candidate = raw.decode("utf-8", "replace").strip()
-        if candidate:
-            first = candidate
-            break
-    if not first:
-        raise AiRequestError(["AI API returned an unsupported response format: empty response content"])
-    if not first.startswith("data:"):
-        # The endpoint answered with one JSON document instead of an event stream.
-        body = json.loads((first + "\n" + response.read().decode("utf-8", "replace")).strip())
-        reasoning = extract_reasoning(body, api_mode)
-        if reasoning and on_reasoning:
-            on_reasoning(reasoning)
-        content = extract_ai_content(body, api_mode)
-        if not content:
-            raise AiRequestError(["AI API returned an unsupported response format: empty response content"])
-        if on_delta:
-            on_delta(content)
-        return content
-    collected: list[str] = []
-
-    def consume(line: str) -> bool:
-        line = line.strip()
-        if not line or line.startswith(":") or not line.startswith("data:"):
-            return False
-        data = line[5:].strip()
-        if data == "[DONE]":
-            return True
-        try:
-            chunk = json.loads(data)
-        except json.JSONDecodeError:
-            return False
-        kind = chunk.get("type")
-        if kind == "response.reasoning_summary_text.delta":
-            piece = chunk.get("delta")
-            if piece and on_reasoning:
-                on_reasoning(piece)
-            return False
-        if kind == "response.output_text.delta":
-            piece = chunk.get("delta")
-            if piece:
-                collected.append(piece)
-                if on_delta:
-                    on_delta(piece)
-            return False
-        for choice in chunk.get("choices", []):
-            delta = choice.get("delta") or {}
-            thought = delta.get("reasoning_content") or delta.get("reasoning")
-            if thought and on_reasoning:
-                on_reasoning(thought)
-            piece = delta.get("content")
-            if piece:
-                collected.append(piece)
-                if on_delta:
-                    on_delta(piece)
-        return False
-
-    if consume(first):
-        return "".join(collected)
-    for raw in response:
-        interrupted()
-        if consume(raw.decode("utf-8", "replace")):
-            break
-    content = "".join(collected)
-    if not content:
-        raise AiRequestError(["AI API returned an unsupported response format: empty response content"])
-    return content
-
-
-def ai_request_once(base_url: str, api_key: str, model: str, api_mode: str, messages: list[dict],
-                    timeout: float, stream: bool, on_delta, on_reasoning, cancel, on_open) -> str:
-    endpoint = ai_endpoint(api_mode)
-    payload_value = build_ai_payload(model, api_mode, messages)
-    if stream:
-        payload_value["stream"] = True
-    payload = json.dumps(payload_value, ensure_ascii=False).encode("utf-8")
-    url = base_url + endpoint
-    headers = {"Authorization": "Bearer " + api_key, "Content-Type": "application/json"}
-    if stream:
-        headers["Accept"] = "text/event-stream"
-    try:
-        request = urllib.request.Request(url, data=payload, headers=headers, method="POST")
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            if on_open:
-                on_open(response)
-            if stream:
-                return read_ai_stream(response, api_mode, on_delta, on_reasoning, cancel)
-            body = json.loads(response.read().decode("utf-8"))
-            reasoning = extract_reasoning(body, api_mode)
-            if reasoning and on_reasoning:
-                on_reasoning(reasoning)
-            content = extract_ai_content(body, api_mode)
-            if not content:
-                raise KeyError("empty response content")
-            return content
-    except (AiRequestError, AiCancelled):
-        raise
-    except json.JSONDecodeError as exc:
-        raise AiRequestError([f"AI API returned invalid JSON: {exc}"]) from exc
-    except urllib.error.HTTPError as exc:
-        detail = api_error_message(exc.read())
-        lines = [f"AI API error: HTTP {exc.code} {exc.reason}"]
-        if detail:
-            lines.append(f"Service message: {detail}")
-        lines.append(f"Endpoint: {url}")
-        if exc.code in {401, 403}:
-            lines.append("Check the API key and whether it can access the selected model.")
-        elif exc.code == 404:
-            lines.append("Check CSTUDY_API_BASE, API mode, and the provider's compatible endpoint.")
-        elif exc.code == 429:
-            lines.append("The service rate limit or account quota was exceeded.")
-        raise AiRequestError(lines) from exc
-    except (urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
-        if cancel is not None and cancel.is_set():
-            raise AiCancelled() from exc
-        reason = getattr(exc, "reason", exc)
-        raise AiRequestError([f"AI API connection failed: {reason}", f"Endpoint: {url}",
-                              "Check the network or proxy, then retry."]) from exc
-    except (KeyError, IndexError, TypeError) as exc:
-        raise AiRequestError([f"AI API returned an unsupported response format: {exc}"]) from exc
-
-
-def ai_request(base_url: str, api_key: str, model: str, api_mode: str, messages: list[dict],
-               timeout: float, stream: bool = False, on_delta=None, on_reasoning=None,
-               cancel=None, on_open=None, retries: int = 0) -> str:
-    """Send one conversation turn and return the assistant text.
-
-    Raises AiRequestError with printable lines instead of leaking tracebacks, and
-    AiCancelled when cancel is set (interrupting a stream or closing it).
-    """
-    attempts = max(1, retries + 1)
-    for attempt in range(attempts):
-        try:
-            return ai_request_once(base_url, api_key, model, api_mode, messages, timeout,
-                                   stream, on_delta, on_reasoning, cancel, on_open)
-        except AiCancelled:
-            raise
-        except AiRequestError as exc:
-            transient = any("connection failed" in line for line in exc.lines)
-            if attempt + 1 < attempts and transient:
-                time.sleep(0.4)
-                continue
-            raise
-    raise AiRequestError(["AI API request failed"])
-
-
 def exercise_prompt(target: Path, hint_only: bool = False) -> str:
     """Build the one-shot prompt used by the ai command and the chat opener."""
     source, tests = exercise_files(target)
@@ -1435,15 +1895,6 @@ def exercise_prompt(target: Path, hint_only: bool = False) -> str:
             "Current code:\n" + read_text(source)[:10000] + "\n"
             "Tests:\n" + read_text(tests)[:5000] + "\n"
             "Latest grading result:\n" + json.dumps(previous, ensure_ascii=False)[:5000])
-
-
-def print_ai_answer(content: str, raw: bool = False) -> None:
-    """Render the answer as Markdown on a terminal; keep redirected output verbatim."""
-    text = content.rstrip()
-    if raw or not sys.stdout.isatty():
-        print(text)
-        return
-    print(console_ux.render_markdown(text, width=console_ux.terminal_width()))
 
 
 def command_ai(args: argparse.Namespace) -> int:
@@ -1475,7 +1926,6 @@ def command_ai(args: argparse.Namespace) -> int:
     source, tests = exercise_files(target)
     if source is None or tests is None:
         return EXIT_USAGE
-    previous = current_state().get("exercises", {}).get(exercise_id(target), {}).get("last_result", {})
     prompt = exercise_prompt(target, getattr(args, "hint_only", False))
     timeout = getattr(args, "ai_timeout", 30.0)
     try:
@@ -1491,68 +1941,209 @@ def command_ai(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
-CHAT_COMMANDS = [
-    ("/help", "show this help", False),
-    ("/hint", "ask for a hint about the current exercise", False),
-    ("/code", "reload Ques.c and the latest grading result", False),
-    ("/clear", "forget the conversation so far", False),
-    ("/model", "switch model (e.g. deepseek-reasoner)", True),
-    ("/thinking", "toggle the thinking transcript", False),
-    ("/raw", "toggle raw Markdown output", False),
-    ("/stream", "toggle token streaming", False),
-    ("/save", "write the last answer to a file", True),
-    ("/exit", "leave chat", False),
-]
-
-CHAT_HELP = ("Commands (type / for completion):\n"
-             + "\n".join("  %-10s %s" % (name, description) for name, description, _ in CHAT_COMMANDS)
-             + "\n\nWhile a request runs: Enter queues the message, Esc interrupts, Ctrl+C exits."
-             + "\nEditing: Left/Right, Home/End, Backspace, Delete, Ctrl+U/K/W."
-             + "\nUp/Down pick a command while typing /, otherwise they recall history.")
-
-CHAT_SYSTEM_PROMPT = """You are CStudy's C language tutor inside a terminal.
-Reply in the same language as the student's question.
-Prefer short Markdown: headings, bullet lists, and fenced C code blocks.
-Explain the cause before showing code, and never claim code was tested.
-Never modify files; the student applies the changes themselves."""
-
-HINT_REQUEST = ("Analyse my current code against the exercise description and tests, then give hints and "
-                "debugging questions without revealing the complete solution.")
-
-
 def chat_system_prompt(target: Path) -> str:
     """Conversation context: the exercise, the student's code, and the last result."""
     source, tests = exercise_files(target)
     previous = current_state().get("exercises", {}).get(exercise_id(target), {}).get("last_result", {})
-    parts = [CHAT_SYSTEM_PROMPT,
-             f"Exercise: {exercise_id(target)} - {metadata(target)['title']}"]
     description = target / "description.md"
-    if description.exists():
-        parts.append("Exercise description:\n" + read_text(description)[:5000])
-    if source is not None:
-        parts.append("Current Ques.c:\n" + read_text(source)[:10000])
-    if tests is not None:
-        parts.append("Tests:\n" + read_text(tests)[:5000])
-    if previous:
-        parts.append("Latest grading result:\n" + json.dumps(previous, ensure_ascii=False)[:3000])
-    return "\n\n".join(parts)
+    return build_chat_system_prompt(
+        exercise_id(target), metadata(target)["title"],
+        read_text(description) if description.exists() else "",
+        read_text(source) if source is not None else "",
+        read_text(tests) if tests is not None else "",
+        previous)
 
 
-def chat_status_line(elapsed: float, label: str, tokens: int, animate: bool = True) -> str:
-    """Compose the pinned status row: marker, phase, counters.
+@dataclass
+class ChatState:
+    """Mutable conversation state shared by the chat helpers below.
 
-    Streamed text belongs to the transcript, so this row never previews it: a
-    sliding preview reads as noise and forces a repaint on every token, which
-    fights the user's scrolling.
+    Kept as one object so chat_session stays a readable input loop instead of a
+    300-line function closing over twenty locals.
     """
-    if not animate:
-        # The transcript is visibly moving on its own, so this row stays
-        # completely still: any repaint here would fight the user's scrolling
-        # while adding nothing they cannot already see.
-        return "%s %s" % (console_ux.paint("\u273b", "dim"), label)
-    marker = console_ux.paint(console_ux.spinner_frame(elapsed), "cyan")
-    return "%s %s %s" % (marker, label,
-                         console_ux.paint("(%.1fs \u00b7 %d tok)" % (elapsed, tokens), "dim"))
+
+    target: Path
+    console: Any
+    messages: list
+    work: "queue.Queue[tuple]"
+    pending: list
+    base_url: str
+    api_key: str
+    model: str
+    api_mode: str
+    timeout: float
+    width: int
+    raw: bool
+    stream: bool
+    show_thinking: bool = True
+    active: bool = False
+    cancel_event: Optional[threading.Event] = None
+    response_slot: dict = field(default_factory=dict)
+    started: float = 0.0
+    tokens: int = 0
+    answer: str = ""
+    reasoning: str = ""
+    last_answer: str = ""
+    thinking: Any = None
+    last_transcript: float = 0.0
+    worker: Optional[threading.Thread] = None
+
+
+def chat_start_request(state: ChatState, question: str) -> None:
+    """Start one assistant turn in the background; results arrive on state.work."""
+    state.thinking = None
+    state.messages.append({"role": "user", "content": question})
+    state.cancel_event = threading.Event()
+    state.started = time.monotonic()
+    state.tokens = 0
+    state.answer = ""
+    state.reasoning = ""
+    state.response_slot.clear()
+    state.active = True
+    state.console.note("思考中...")
+    model, api_mode = state.model, state.api_mode
+
+    def on_delta(piece: str) -> None:
+        state.work.put(("delta", piece))
+
+    def on_reasoning(piece: str) -> None:
+        state.work.put(("reasoning", piece))
+
+    def on_open(response) -> None:
+        state.response_slot["response"] = response
+
+    def run() -> None:
+        try:
+            text = ai_request(state.base_url, state.api_key, model, api_mode, list(state.messages),
+                              state.timeout, stream=state.stream, on_delta=on_delta,
+                              on_reasoning=on_reasoning, cancel=state.cancel_event,
+                              on_open=on_open, retries=1)
+            state.work.put(("done", text))
+        except AiCancelled:
+            state.work.put(("cancelled", ""))
+        except AiRequestError as exc:
+            state.work.put(("error", exc.lines))
+
+    state.worker = threading.Thread(target=run, daemon=True)
+    state.worker.start()
+
+
+def chat_interrupt(state: ChatState) -> None:
+    """Stop the in-flight turn; silent when nothing is running."""
+    if not state.active:
+        return
+    if state.cancel_event is not None:
+        state.cancel_event.set()
+    response = state.response_slot.get("response")
+    if response is not None:
+        try:
+            response.close()
+        except OSError:
+            pass
+    state.console.print_above(console_ux.paint("✗ 已中断", "yellow"))
+
+
+def chat_handle_command(state: ChatState, line: str) -> Optional[str]:
+    """Handle one slash command; returns "exit" when the session should end."""
+    command, _, argument = line.partition(" ")
+    command = command.lower()
+    console = state.console
+    if command in {"/exit", "/quit", "/q"}:
+        return "exit"
+    if command in {"/help", "/?"}:
+        console.print_above(CHAT_HELP)
+    elif command == "/hint":
+        state.pending.append(HINT_REQUEST)
+    elif command == "/clear":
+        del state.messages[1:]
+        console.print_above("已清空上下文")
+    elif command in {"/code", "/result"}:
+        state.messages[0] = {"role": "system", "content": chat_system_prompt(state.target)}
+        console.print_above("已重新载入 Ques.c 与最近判定结果")
+    elif command == "/thinking":
+        state.show_thinking = not state.show_thinking
+        if not state.show_thinking and state.thinking is not None:
+            state.thinking.flush()
+            state.thinking = None
+        console.print_above("思考过程写入对话" if state.show_thinking else "只保留思考小结")
+    elif command == "/model":
+        if argument.strip():
+            state.model = argument.strip()
+        console.print_above("模型: " + state.model)
+    elif command == "/raw":
+        state.raw = not state.raw
+        console.print_above("原始 Markdown" if state.raw else "渲染后 Markdown")
+    elif command == "/stream":
+        state.stream = not state.stream
+        console.print_above("流式接收" if state.stream else "非流式")
+    elif command == "/save":
+        name = argument.strip() or "ai-answer.md"
+        try:
+            (ROOT / name).write_text(state.last_answer, encoding="utf-8")
+            console.print_above(f"已保存到 {name}")
+        except OSError as exc:
+            console.print_above(f"无法保存 {name}: {exc}")
+    else:
+        console.print_above(f"未知命令: {command}（输入 /help 查看）")
+    return None
+
+
+def chat_drain_work(state: ChatState) -> None:
+    """Apply everything the worker produced; safe to call before leaving."""
+    console = state.console
+    while True:
+        try:
+            kind, payload = state.work.get_nowait()
+        except queue.Empty:
+            break
+        if kind == "delta":
+            state.answer += payload
+            state.tokens += 1
+            if state.thinking is not None:
+                # the answer starts: close the thinking block above it
+                state.thinking.flush()
+                state.thinking = None
+        elif kind == "reasoning":
+            state.reasoning += payload
+            state.tokens += 1
+            if state.show_thinking:
+                if state.thinking is None:
+                    console.print_above(console_ux.paint("✻ 思考中", "dim"))
+                    state.thinking = console_ux.StreamingBlock(console, style="dim", prefix="  ")
+                state.thinking.feed(payload)
+                state.last_transcript = time.monotonic()
+        elif kind == "done":
+            state.active = False
+            state.last_answer = payload
+            state.messages.append({"role": "assistant", "content": payload})
+            if state.thinking is not None:
+                state.thinking.flush()
+                state.thinking = None
+            if state.reasoning:
+                elapsed = time.monotonic() - state.started
+                hint = "/thinking 隐藏" if state.show_thinking else "/thinking 展开"
+                console.print_above(console_ux.paint(
+                    "✻ 思考 %.1f 秒（%d 字符） · %s" % (elapsed, len(state.reasoning), hint), "dim"))
+            console.print_above("")
+            if state.raw or not sys.stdout.isatty():
+                console.print_above(payload.rstrip())
+            else:
+                console.print_above(console_ux.render_markdown(payload.rstrip(), width=state.width))
+        elif kind == "cancelled":
+            state.active = False
+            state.messages.pop()
+            if state.thinking is not None:
+                state.thinking.flush()
+                state.thinking = None
+            console.print_above(console_ux.paint("已中断，本轮已丢弃", "yellow"))
+        elif kind == "error":
+            state.active = False
+            state.messages.pop()
+            if state.thinking is not None:
+                state.thinking.flush()
+                state.thinking = None
+            for text in payload:
+                console.print_above(console_ux.paint(text, "red"))
 
 
 def chat_session(target: Path, timeout: float = 60.0, stream: bool = True,
@@ -1564,225 +2155,57 @@ def chat_session(target: Path, timeout: float = 60.0, stream: bool = True,
         if not (sys.stdin.isatty() and sys.stdout.isatty()) or not configure_ai():
             return 4
         ai_cfg = ai_configuration()
-    api_key = ai_cfg["api_key"]
     base_url = ai_cfg["api_base"].rstrip("/")
-    model = ai_cfg["model"]
     api_mode = ai_cfg["mode"]
     if "api.deepseek.com" in base_url.lower() and api_mode == "responses":
-        print("DeepSeek configuration error: its OpenAI-compatible API uses chat mode.", file=sys.stderr)
-        print("Set ai_api_mode to chat, or run the AI setup and choose DeepSeek.", file=sys.stderr)
-        print(f"Expected endpoint: {base_url}/chat/completions", file=sys.stderr)
+        print("DeepSeek 配置错误：它的 OpenAI 兼容接口使用 chat 模式。", file=sys.stderr)
+        print("请把 ai_api_mode 改为 chat，或重新运行 AI 配置并选择 DeepSeek。", file=sys.stderr)
+        print(f"预期端点: {base_url}/chat/completions", file=sys.stderr)
         return 4
 
-    messages: list[dict] = [{"role": "system", "content": chat_system_prompt(target)}]
     width = console_ux.terminal_width()
-    print(console_ux.paint(f"Chat: {exercise_id(target)} - {metadata(target)['title']}", "bold", "cyan"))
-    print(console_ux.paint("Enter queues while busy, Esc interrupts, /help lists commands.", "dim"))
+    print(console_ux.paint(f"对话: {exercise_id(target)} - {metadata(target)['title']}", "bold", "cyan"))
+    print(console_ux.paint("请求进行时 Enter 排队，Esc 中断，/help 列出命令。", "dim"))
 
     interactive = interactive_terminal()
     reader: Optional[console_ux.InputReader] = None
-    console: Any
     if interactive:
         reader = console_ux.InputReader(read_key, console_ux.LineEditor(commands=CHAT_COMMANDS))
-        console = console_ux.LiveConsole(hint="Enter queues \u00b7 Esc interrupts \u00b7 /help",
-                                         restore_hidden_cursor=_ALTERNATE_SCREEN)
+        console: Any = console_ux.LiveConsole(hint="Enter 排队 · Esc 中断 · /help",
+                                              restore_hidden_cursor=_ALTERNATE_SCREEN)
         reader.start()
     else:
         console = console_ux.PlainConsole()
 
-    work: "queue.Queue[tuple]" = queue.Queue()
-    pending: list[str] = [opening] if opening else []
-    active = False
-    cancel_event: Optional[threading.Event] = None
-    response_slot: dict = {}
-    started = 0.0
-    tokens = 0
-    answer = ""
-    reasoning = ""
-    last_answer = ""
-    stream_on = stream
-    show_thinking = True
-    thinking: Optional[console_ux.StreamingBlock] = None
-    last_transcript = 0.0
-    worker: Optional[threading.Thread] = None
-
-    def start_request(question: str) -> None:
-        nonlocal active, cancel_event, started, tokens, answer, reasoning, worker, thinking
-        thinking = None
-        messages.append({"role": "user", "content": question})
-        cancel_event = threading.Event()
-        started = time.monotonic()
-        tokens = 0
-        answer = ""
-        reasoning = ""
-        response_slot.clear()
-        active = True
-        console.note("Thinking...")
-        current_model, current_mode = model, api_mode
-
-        def on_delta(piece: str) -> None:
-            work.put(("delta", piece))
-
-        def on_reasoning(piece: str) -> None:
-            work.put(("reasoning", piece))
-
-        def on_open(response) -> None:
-            response_slot["response"] = response
-
-        def run() -> None:
-            try:
-                text = ai_request(base_url, api_key, current_model, current_mode, list(messages),
-                                  timeout, stream=stream_on, on_delta=on_delta,
-                                  on_reasoning=on_reasoning, cancel=cancel_event,
-                                  on_open=on_open, retries=1)
-                work.put(("done", text))
-            except AiCancelled:
-                work.put(("cancelled", ""))
-            except AiRequestError as exc:
-                work.put(("error", exc.lines))
-
-        worker = threading.Thread(target=run, daemon=True)
-        worker.start()
-
-    def interrupt() -> None:
-        if not active:
-            # nothing is running: stay quiet (Esc already closed any menu)
-            return
-        if cancel_event is not None:
-            cancel_event.set()
-        response = response_slot.get("response")
-        if response is not None:
-            try:
-                response.close()
-            except OSError:
-                pass
-        console.print_above(console_ux.paint("\u2717 interrupted", "yellow"))
-
-    def handle_command(line: str) -> Optional[str]:
-        nonlocal raw, stream_on, show_thinking, model, thinking
-        command, _, argument = line.partition(" ")
-        command = command.lower()
-        if command in {"/exit", "/quit", "/q"}:
-            return "exit"
-        if command in {"/help", "/?"}:
-            console.print_above(CHAT_HELP)
-        elif command == "/hint":
-            pending.append(HINT_REQUEST)
-        elif command == "/clear":
-            del messages[1:]
-            console.print_above("context cleared")
-        elif command in {"/code", "/result"}:
-            messages[0] = {"role": "system", "content": chat_system_prompt(target)}
-            console.print_above("context reloaded")
-        elif command == "/thinking":
-            show_thinking = not show_thinking
-            if not show_thinking and thinking is not None:
-                thinking.flush()
-                thinking = None
-            console.print_above("thinking streams into the transcript" if show_thinking
-                                else "thinking summary only")
-        elif command == "/model":
-            if argument.strip():
-                model = argument.strip()
-            console.print_above("model: " + model)
-        elif command == "/raw":
-            raw = not raw
-            console.print_above("raw Markdown" if raw else "rendered Markdown")
-        elif command == "/stream":
-            stream_on = not stream_on
-            console.print_above("streaming" if stream_on else "non-streaming")
-        elif command == "/save":
-            name = argument.strip() or "ai-answer.md"
-            try:
-                (ROOT / name).write_text(last_answer, encoding="utf-8")
-                console.print_above(f"saved to {name}")
-            except OSError as exc:
-                console.print_above(f"cannot save {name}: {exc}")
-        else:
-            console.print_above(f"unknown command: {command} (try /help)")
-        return None
+    state = ChatState(target=target, console=console,
+                      messages=[{"role": "system", "content": chat_system_prompt(target)}],
+                      work=queue.Queue(), pending=[opening] if opening else [],
+                      base_url=base_url, api_key=ai_cfg["api_key"], model=ai_cfg["model"],
+                      api_mode=api_mode, timeout=timeout, width=width, raw=raw, stream=stream)
 
     def plain_events() -> list[tuple]:
         try:
-            line = read_line(console_ux.paint("\n\u203a ", "cyan"))
+            line = read_line(console_ux.paint("\n› ", "cyan"))
         except (EOFError, KeyboardInterrupt):
             return [("exit", "")]
         return [("submit", line)] if line else []
 
-    def drain_work() -> None:
-        """Apply everything the worker produced; safe to call before leaving."""
-        nonlocal active, last_answer, answer, tokens, reasoning, thinking, last_transcript
-        while True:
-            try:
-                kind, payload = work.get_nowait()
-            except queue.Empty:
-                break
-            if kind == "delta":
-                answer += payload
-                tokens += 1
-                if thinking is not None:
-                    # the answer starts: close the thinking block above it
-                    thinking.flush()
-                    thinking = None
-            elif kind == "reasoning":
-                reasoning += payload
-                tokens += 1
-                if show_thinking:
-                    if thinking is None:
-                        console.print_above(console_ux.paint("\u273b Thinking", "dim"))
-                        thinking = console_ux.StreamingBlock(console, style="dim", prefix="  ")
-                    thinking.feed(payload)
-                    last_transcript = time.monotonic()
-            elif kind == "done":
-                active = False
-                last_answer = payload
-                messages.append({"role": "assistant", "content": payload})
-                if thinking is not None:
-                    thinking.flush()
-                    thinking = None
-                if reasoning:
-                    elapsed = time.monotonic() - started
-                    hint = "/thinking hides it" if show_thinking else "/thinking to show"
-                    console.print_above(console_ux.paint(
-                        "\u273b thought for %.1fs (%d chars) \u00b7 %s"
-                        % (elapsed, len(reasoning), hint), "dim"))
-                console.print_above("")
-                if raw or not sys.stdout.isatty():
-                    console.print_above(payload.rstrip())
-                else:
-                    console.print_above(console_ux.render_markdown(payload.rstrip(), width=width))
-            elif kind == "cancelled":
-                active = False
-                messages.pop()
-                if thinking is not None:
-                    thinking.flush()
-                    thinking = None
-                console.print_above(console_ux.paint("interrupted; the turn was discarded", "yellow"))
-            elif kind == "error":
-                active = False
-                messages.pop()
-                if thinking is not None:
-                    thinking.flush()
-                    thinking = None
-                for text in payload:
-                    console.print_above(console_ux.paint(text, "red"))
-
     try:
         while True:
             # 1. drain streamed output and finish the turn
-            drain_work()
+            chat_drain_work(state)
 
             # 2. a queued message starts as soon as the previous turn finishes
-            if not active and pending:
-                start_request(pending.pop(0))
+            if not state.active and state.pending:
+                chat_start_request(state, state.pending.pop(0))
 
             # 3. fall back to line input if raw keys are unavailable
             if reader is not None and reader.failed:
                 reader.stop()
                 reader = None
-                console.close()
-                console = console_ux.PlainConsole()
-                console.print_above(console_ux.paint("keyboard input unavailable; using line input", "yellow"))
+                state.console.close()
+                state.console = console_ux.PlainConsole()
+                state.console.print_above(console_ux.paint("键盘输入不可用，改用行输入", "yellow"))
 
             # 4. collect input without blocking the stream
             events = reader.poll() if reader is not None else plain_events()
@@ -1794,23 +2217,23 @@ def chat_session(target: Path, timeout: float = 60.0, stream: bool = True,
                         continue
                     # echo the submitted line: without it a command that prints
                     # its own help looks like nothing happened
-                    console.print_above(console_ux.paint("\u203a " + line, "cyan"))
+                    state.console.print_above(console_ux.paint("› " + line, "cyan"))
                     if line.lower() in {"exit", "quit"}:
                         leaving = True
                         break
                     if line.startswith("/"):
-                        if handle_command(line) == "exit":
+                        if chat_handle_command(state, line) == "exit":
                             leaving = True
                             break
                         continue
-                    pending.append(line)
-                    if active:
-                        console.print_above(console_ux.paint("\u23ce queued for the next turn", "dim"))
+                    state.pending.append(line)
+                    if state.active:
+                        state.console.print_above(console_ux.paint("⏎ 已排队，下一轮发送", "dim"))
                 elif action == "cancel":
-                    interrupt()
+                    chat_interrupt(state)
                 elif action == "interrupt":
-                    if active:
-                        interrupt()
+                    if state.active:
+                        chat_interrupt(state)
                     else:
                         leaving = True
                         break
@@ -1818,23 +2241,23 @@ def chat_session(target: Path, timeout: float = 60.0, stream: bool = True,
                     leaving = True
                     break
             if leaving:
-                drain_work()
-                if active:
-                    interrupt()
-                    if worker is not None:
-                        worker.join(timeout=1.0)
-                    drain_work()
-                console.close()
+                chat_drain_work(state)
+                if state.active:
+                    chat_interrupt(state)
+                    if state.worker is not None:
+                        state.worker.join(timeout=1.0)
+                    chat_drain_work(state)
+                state.console.close()
                 print("bye")
                 return EXIT_OK
 
             # 5. redraw the pinned region
-            if active:
-                label = "Receiving" if answer else "Thinking"
+            if state.active:
+                label = "接收中" if state.answer else "思考中"
                 # animate only while nothing else on screen is moving; otherwise
                 # hold the row still so it does not repaint on every token
-                calm = show_thinking and (time.monotonic() - last_transcript) < 0.6
-                status = chat_status_line(time.monotonic() - started, label, tokens,
+                calm = state.show_thinking and (time.monotonic() - state.last_transcript) < 0.6
+                status = chat_status_line(time.monotonic() - state.started, label, state.tokens,
                                           animate=not calm)
             else:
                 status = ""
@@ -1843,20 +2266,21 @@ def chat_session(target: Path, timeout: float = 60.0, stream: bool = True,
                 menu = (console_ux.menu_rows(CHAT_COMMANDS, editor.buffer, editor.menu_index, width)
                         if editor.menu_open else [])
                 if menu and not status:
-                    status = console_ux.paint(
-                        "\u2191\u2193 select \u00b7 Enter run \u00b7 Tab complete \u00b7 Esc close", "dim")
-                console.update(status, editor.buffer, editor.caret, menu)
+                    status = console_ux.paint("↑↓ 选择 · Enter 执行 · Tab 补全 · Esc 关闭", "dim")
+                state.console.update(status, editor.buffer, editor.caret, menu)
             else:
-                console.update(status)
+                state.console.update(status)
             time.sleep(0.05)
     finally:
         if reader is not None:
             reader.stop()
-        console.close()
+        state.console.close()
 
 
 def command_chat(args: argparse.Namespace) -> int:
-    target = find_exercise(args.exercise) if getattr(args, "exercise", None) else None
+    exercise = getattr(args, "exercise", None)
+    target = require_exercise(exercise) if exercise else None
+    if exercise and target is None: return EXIT_USAGE
     if target is None:
         target = current_exercise_from_state(current_state(), discover())
     if target is None:
@@ -1875,9 +2299,9 @@ def build_parser() -> argparse.ArgumentParser:
     sub = root.add_subparsers(dest="command")
     listing = sub.add_parser("list", aliases=["progress"], parents=[common]); listing.add_argument("--all", action="store_true")
     sub.add_parser("curriculum", parents=[common])
-    check = sub.add_parser("check", aliases=["run", "verify"], parents=[common]); check.add_argument("exercise", nargs="?"); check.add_argument("--timeout", type=float); check.add_argument("--total-timeout", type=float)
-    watch = sub.add_parser("watch", parents=[common]); watch.add_argument("exercise", nargs="?"); watch.add_argument("--timeout", type=float, default=2.0); watch.add_argument("--total-timeout", type=float, default=10.0); watch.add_argument("--interval", type=float, default=.1); watch.add_argument("--auto-next", dest="auto_next", action="store_true", default=True); watch.add_argument("--no-auto-next", dest="auto_next", action="store_false"); watch.add_argument("--once", action="store_true"); watch.add_argument("--no-editor", action="store_true"); watch.add_argument("--edit-cmd")
-    validate_parser = sub.add_parser("validate", parents=[common]); validate_parser.add_argument("--compile", action="store_true"); validate_parser.add_argument("--compile-timeout", type=float, default=10.0)
+    check = sub.add_parser("check", aliases=["run", "verify"], parents=[common]); check.add_argument("exercise", nargs="?"); check.add_argument("--all", action="store_true"); check.add_argument("--jobs", type=int, help="parallel grading workers (default: CPU count, capped at 8)"); check.add_argument("--timeout", type=float); check.add_argument("--total-timeout", type=float)
+    watch = sub.add_parser("watch", parents=[common]); watch.add_argument("exercise", nargs="?"); watch.add_argument("--timeout", type=float, default=2.0); watch.add_argument("--total-timeout", type=float, default=10.0); watch.add_argument("--interval", type=float, default=.1); watch.add_argument("--auto-next", dest="auto_next", action="store_true", default=True); watch.add_argument("--no-auto-next", dest="auto_next", action="store_false"); watch.add_argument("--once", action="store_true"); watch.add_argument("--no-editor", action="store_true"); watch.add_argument("--no-follow", dest="no_follow", action="store_true", help="do not switch to the exercise whose file you edited last"); watch.add_argument("--active-file", dest="active_file", help="editor hook file naming the open exercise (default .cstudy/active)"); watch.add_argument("--edit-cmd")
+    validate_parser = sub.add_parser("validate", parents=[common]); validate_parser.add_argument("--compile", action="store_true"); validate_parser.add_argument("--jobs", type=int, help="parallel compile workers (default: CPU count, capped at 8)"); validate_parser.add_argument("--compile-timeout", type=float, default=10.0)
     sub.add_parser("reset", parents=[common]); sub.add_parser("doctor", parents=[common])
     next_parser = sub.add_parser("next", parents=[common]); next_parser.add_argument("exercise", nargs="?")
     status_parser = sub.add_parser("status", parents=[common]); status_parser.add_argument("exercise", nargs="?")
@@ -1889,6 +2313,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    console_ux.configure_encoding()
     console_ux.enable_windows_vt()
     args = build_parser().parse_args()
     if not args.command:
@@ -1900,7 +2325,7 @@ def main() -> int:
             return command_progress(argparse.Namespace(all=False, json=False))
         defaults = argparse.Namespace(exercise=exercise_id(target), timeout=2.0, total_timeout=10.0,
                                       interval=.1, auto_next=False, once=False, json=False, quiet=False,
-                                      progress=True, no_editor=False, edit_cmd=None)
+                                      progress=True, no_editor=False, no_follow=False, active_file=None, edit_cmd=None)
         return command_watch(defaults)
     if args.command in {"list", "progress"}: return command_list(args) if args.command == "list" else command_progress(args)
     if args.command == "curriculum": return command_curriculum(args)

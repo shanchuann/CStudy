@@ -1,7 +1,0 @@
-INPUT:
-3
-Lin 80
-Mei 95
-Kai 88
-OUTPUT:
-Mei

@@ -20,7 +20,7 @@
   <img src="https://img.shields.io/badge/CLI-interactive-0EA5E9" alt="Interactive CLI">
   <img src="https://img.shields.io/badge/judge-multi--case-F97316" alt="Multi-case judge">
   <img src="https://img.shields.io/badge/AI-optional-8B5CF6" alt="Optional AI">
-  <img src="https://img.shields.io/badge/exercises-33-DC2626" alt="33 exercises">
+  <img src="https://img.shields.io/badge/exercises-96-DC2626" alt="96 exercises">
 </p>
 
 CStudy 将题目描述、源码编辑、自动编译、测试判定、完成进度和可选 AI 提示整合在同一个终端学习流程中。保存 `Ques.c` 后即可自动重新判题；通过当前练习后，流程会继续前往下一题。
@@ -39,6 +39,16 @@ CStudy 将题目描述、源码编辑、自动编译、测试判定、完成进�
 - [项目结构](#项目结构)
 - [开发与验证](#开发与验证)
 - [常见问题](#常见问题)
+- [其他文档](#其他文档)
+
+## 其他文档
+
+| 文档 | 内容 |
+| --- | --- |
+| [docs/architecture.md](docs/architecture.md) | 模块图与依赖方向、判题/状态/缓存/界面/AI 的关键流程、扩展点、CI 作业 |
+| [docs/exercise-authoring.md](docs/exercise-authoring.md) | 章节结构、文件要求、批量生成与校验、新建题目、Test.txt 转义、退出码 |
+| [docs/CStudy-CLI.md](docs/CStudy-CLI.md) | 自动化与集成：JSON 结构、退出码、CI 示例、状态与日志、编辑器集成 |
+| [CHANGELOG.md](CHANGELOG.md) | 版本变更记录 |
 
 ## 核心能力
 
@@ -55,6 +65,22 @@ CStudy 将题目描述、源码编辑、自动编译、测试判定、完成进�
 | 动态题库 | 新练习通过目录和 `metadata.json` 自动加入，无需修改主程序 |
 
 ## 快速开始
+
+### 安装方式
+
+两种都支持，题库与进度都在仓库目录里：
+
+```bash
+# A. clone（推荐，题库随仓库更新）
+git clone https://github.com/shanchuann/CStudy.git && cd CStudy
+
+# B. 作为工具安装（可从任意目录调用）
+pipx install .
+cstudy --version
+```
+
+安装成工具后，题库根按 `CSTUDY_ROOT` → 当前目录（含 `Exercises/`）→ 模块目录 依次解析；
+把 `CSTUDY_ROOT` 指向题库目录即可在任何地方使用自己的题库。
 
 ### 环境要求
 
@@ -99,11 +125,54 @@ bash ./cstudy.sh doctor
 | --- | --- |
 | `n` | 当前题通过后进入下一题 |
 | `r` | 立即重新编译并判题 |
-| `h` | 显示或隐藏题目提示 |
+| `h` | 在题面与提示之间切换（提示只显示提示要点和第一个用例） |
+| `e` | 用配置的编辑器打开当前 `Ques.c` |
+| `s` | 跳过当前练习并切到下一道未完成题 |
 | `a` | 打开 AI 对话，进入时自动请求一次提示 |
 | `l` | 打开练习列表 |
 | `x` | 重置当前练习 |
+| `↑`/`↓` 或 `j`/`k` | 题面上下滚动一行 |
+| `PgUp`/`PgDn` | 题面翻页（长题面按视口分页，标题行显示当前行范围） |
+| `g` / `G` | 跳到题面开头 / 末尾 |
+| `f` | 开关"跟随最近编辑的文件"（默认开） |
+| `:` 或 `/` | 打开命令提示符（带补全），回车执行 |
+| `?` | 显示命令与快捷键帮助 |
 | `q` | 退出并保留进度 |
+
+### 命令提示符
+
+按 `:` 或 `/` 打开底部命令提示符，输入命令后回车执行；支持 Tab/↑↓ 补全，Esc 取消。
+命令与单键动作完全等价（同一套分发逻辑），既可以写全名也可以写单字母：
+
+```text
+/help   命令与快捷键帮助        /hint   题面/提示切换
+/next   下一道未完成题           /run    立即重新编译判定
+/list   打开练习列表            /goto <题号或编号>  跳到指定题目
+/skip   跳过并前进              /reset  恢复初始代码
+/edit   用编辑器打开            /ai     打开 AI 对话
+/follow 跟随开关                /quit   退出
+```
+
+### 跟随最近编辑的文件
+
+学习界面默认跟随**你最近修改的那个 `Ques.c`**：在编辑器的文件列表里切到另一题并保存后，
+界面会自动切到该题并重新判定（右上角显示 `[跟随]`）。按 `f` 或输入 `/follow` 可关闭，
+也可以用 `watch --no-follow` 启动时禁用。
+
+### 活动文件（编辑器集成）
+
+除了"保存时间跟随"，`watch` 还会读取 `.cstudy/active`：内容写题目 id（`02-basics/hello`）
+或任意指向该题的路径（`.../Exercises/02-basics/hello/Ques.c`）时，界面立刻切到该题。
+它优先于保存时间跟随，适合让编辑器把"当前打开的文件"写进去：
+
+```powershell
+# 编辑器侧（VS Code 任务、保存钩子或小扩展）执行：
+"02-basics/hello" | Set-Content .cstudy/active
+```
+
+路径可用 `--active-file` 自定义；不需要时把文件留空即可（空文件等于没有信号）。
+
+学习界面为固定布局：顶部是标题、进度条、当前题与源码路径，底部是判定状态行和键位提示，中间是可滚动的题面视口；判定结果用一行一个用例的紧凑格式显示，只有失败用例才展开期望与实际输出。
 
 ### 练习列表
 
@@ -127,7 +196,7 @@ bash ./cstudy.sh doctor
 | `cstudy progress` | `list` 的进度别名 |
 | `cstudy curriculum` | 查看课程章节映射 |
 | `cstudy run <id>` | 编译并判定指定练习 |
-| `cstudy check` | 检查练习 |
+| `cstudy check` | 判定当前练习；`--all` 判定整个题库（默认并行，`--jobs N` 可调） |
 | `cstudy watch [id]` | 进入实时学习流程 |
 | `cstudy next` | 前往下一题 |
 | `cstudy prev <id>` | 前往上一题 |
@@ -136,7 +205,7 @@ bash ./cstudy.sh doctor
 | `cstudy skip <id>` | 跳过并记录题目状态 |
 | `cstudy status [id]` | 查看当前或指定题目状态 |
 | `cstudy reset` | 恢复题目初始代码并重置进度 |
-| `cstudy validate --compile` | 校验并编译整个题库 |
+| `cstudy validate --compile` | 校验并编译整个题库（`--jobs N` 并行，默认 CPU 核数、上限 8） |
 | `cstudy doctor --json` | 输出环境诊断信息 |
 | `cstudy ai --setup` | 配置 AI 服务 |
 | `cstudy ai <id> --hint-only` | 获取提示，不直接给出完整答案 |
@@ -213,7 +282,7 @@ CStudy 会自动识别服务、选择模型和接口模式。对于其他 OpenAI
 $env:CSTUDY_API_KEY = "your-key"
 $env:CSTUDY_API_BASE = "https://api.deepseek.com"
 $env:CSTUDY_AI_MODEL = "deepseek-flash"
-.\cstudy.ps1 ai 01-basics/hello --hint-only
+.\cstudy.ps1 ai 02-basics/hello --hint-only
 ```
 
 可用变量：
@@ -265,7 +334,7 @@ CStudy 会发送当前题目描述、源码、测试用例和最近一次判题�
 推荐使用章节化目录：
 
 ```text
-Exercises/01-basics/hello/
+Exercises/02-basics/hello/
 ├── description.md   # 题目描述与学习目标
 ├── Ques.c           # 学习者作答文件
 ├── Ques.c.bak       # 初始代码备份
@@ -315,16 +384,22 @@ one two
 
 ```text
 CStudy/
-├── cstudy.py              # 跨平台 CLI、判题器和交互界面
-├── console_ux.py          # 终端动画与 Markdown 渲染（仅标准库）
+├── cstudy.py              # 跨平台 CLI、判题器、学习界面与会话编排
+├── ai.py                  # OpenAI-compatible 请求、流式解析与配置解析
+├── chat.py                # 对话命令表、帮助文本、系统提示与状态行
+├── console_render.py      # 终端颜色、CJK 宽度、换行与 Markdown 渲染
+├── console_input.py       # spinner、行编辑、固定区域与流式输出
+├── console_ux.py          # 门面：转发上面两个模块并保留演示 CLI
+├── pyproject.toml         # 打包元数据与 cstudy 控制台入口
 ├── cstudy.ps1             # Windows 入口
 ├── cstudy.sh              # Linux/macOS/WSL 入口
 ├── Exercises/             # 练习题库
 ├── book/                  # 章节清单与题目映射
-├── tests/                 # 单元与集成测试
+├── scripts/               # 出题/校验脚本、兼容入口，scripts/book/ 为书籍流水线归档
+├── tests/                 # 单元测试
 ├── docs/                  # 开发和项目文档
-├── AIserver/              # AI 配置兼容提示
-└── .github/workflows/     # 三平台 CI
+├── ruff.toml              # 静态检查配置（pyflakes 规则）
+└── .github/workflows/     # 三平台 CI + lint
 ```
 
 ## 开发与验证
@@ -341,7 +416,22 @@ python -m unittest discover -s tests -p 'test_*.py' -v
 python cstudy.py validate --compile
 ```
 
-CI 在 Windows、Linux 和 macOS 上分别执行完整单元测试与 CLI smoke tests，并且不会启动阻塞式交互界面。
+静态检查（未使用导入/变量、未定义名称）：
+
+```bash
+python -m ruff check .
+```
+
+并行判题与并行编译（默认 CPU 核数、上限 8，`--jobs 1` 回到串行）：
+
+```bash
+python cstudy.py check --all --jobs 4
+python cstudy.py validate --compile --jobs 4
+```
+
+CI 在 Windows、Linux 和 macOS 上分别执行单元测试与 CLI smoke tests；Linux 作业额外输出 `coverage` 报告
+并做全量 `validate --compile`（Windows/macOS 只做结构校验，避免三平台重复编译 96 道题），
+另有 lint 作业运行 ruff。所有作业都不会启动阻塞式交互界面。
 
 ## 常见问题
 

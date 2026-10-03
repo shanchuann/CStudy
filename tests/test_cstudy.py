@@ -10,6 +10,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from unittest import mock
 
+import ai
 import cstudy
 
 
@@ -28,6 +29,22 @@ class TestParsing(unittest.TestCase):
     def test_line_endings_only_are_normalized(self):
         self.assertEqual(cstudy.normalize("a\r\nb\r\n"), "a\nb")
         self.assertNotEqual(cstudy.normalize("a  \n"), "a")
+
+
+    def test_marker_lines_can_be_escaped(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "Test.txt"
+            path.write_text("INPUT:\n\\INPUT:\n\\---\nOUTPUT:\n\\OUTPUT:\nok\n", encoding="utf-8")
+            cases = cstudy.parse_tests(path)
+        self.assertEqual(len(cases), 1)
+        self.assertEqual(cases[0].input, "INPUT:\n---")
+        self.assertEqual(cases[0].expected, "OUTPUT:\nok")
+
+    def test_unescape_only_touches_marker_lookalikes(self):
+        self.assertEqual(cstudy.unescape_marker("\\INPUT:"), "INPUT:")
+        self.assertEqual(cstudy.unescape_marker("\\---"), "---")
+        self.assertEqual(cstudy.unescape_marker("\\not a marker"), "\\not a marker")
+        self.assertEqual(cstudy.unescape_marker("plain"), "plain")
 
 
 class TestRepository(unittest.TestCase):
@@ -66,7 +83,7 @@ class TestRepository(unittest.TestCase):
     def test_curriculum_maps_every_chapter_to_existing_exercises(self):
         curriculum = cstudy.load_json(cstudy.CURRICULUM, {"chapters": []})["chapters"]
         mapping = cstudy.load_json(cstudy.EXERCISE_MAP, {})
-        self.assertEqual(len(curriculum), 29)
+        self.assertEqual(len(curriculum), 27)
         for chapter in curriculum:
             paths = mapping.get(chapter["id"], [])
             self.assertTrue(paths, chapter["id"])
@@ -97,12 +114,22 @@ class TestRepository(unittest.TestCase):
         curriculum_output = io.StringIO()
         with contextlib.redirect_stdout(curriculum_output):
             self.assertEqual(cstudy.command_curriculum(type("Args", (), {"json": True})()), 0)
-        self.assertEqual(len(json.loads(curriculum_output.getvalue())["chapters"]), 29)
+        self.assertEqual(len(json.loads(curriculum_output.getvalue())["chapters"]), 27)
 
-    def test_compile_validation_covers_current_sources(self):
+    def test_compile_validation_covers_a_sample_of_the_catalogue(self):
+        # The full 96-exercise compile runs in CI via `cstudy validate --compile`;
+        # compiling a sample here keeps the unit suite fast.
+        everything = cstudy.discover(include_hidden=True, include_disabled=True)
+        step = max(1, len(everything) // 8)
+        sample = everything[::step][:8]
+        original = cstudy.discover
+        cstudy.discover = lambda include_hidden=False, include_disabled=False: sample
         output = io.StringIO()
-        with contextlib.redirect_stdout(output):
-            result = cstudy.command_validate(type("Args", (), {"compile": True, "compile_timeout": 10.0})())
+        try:
+            with contextlib.redirect_stdout(output):
+                result = cstudy.command_validate(type("Args", (), {"compile": True, "compile_timeout": 10.0, "jobs": 4})())
+        finally:
+            cstudy.discover = original
         self.assertEqual(result, 0, output.getvalue())
         self.assertIn("0 invalid", output.getvalue())
 
@@ -113,7 +140,7 @@ class TestRepository(unittest.TestCase):
         self.assertEqual(result, 0)
         report = json.loads(output.getvalue())
         self.assertTrue(report["valid"])
-        self.assertEqual(report["exercise_count"], 33)
+        self.assertEqual(report["exercise_count"], 96)
 
 
 class TestGrading(unittest.TestCase):
@@ -229,6 +256,341 @@ class TestGrading(unittest.TestCase):
             finally:
                 cstudy.EXERCISES, cstudy.STATE_DIR, cstudy.STATE_FILE, cstudy.LOG_DIR = old_values
             self.assertIn("watching next: 02-second", output.getvalue())
+
+
+class TestCommandBehaviour(unittest.TestCase):
+    """Covers the command layer that the earlier suite never exercised."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.patcher = mock.patch.multiple(
+            cstudy,
+            EXERCISES=self.root / "Exercises",
+            STATE_DIR=self.root / ".cstudy",
+            STATE_FILE=self.root / ".cstudy" / "state.json",
+            CONFIG_FILE=self.root / ".cstudy" / "config.json",
+            LOG_DIR=self.root / ".cstudy" / "logs")
+        self.patcher.start()
+        self.addCleanup(self.patcher.stop)
+        self.addCleanup(self.temp.cleanup)
+        self.counter = 0
+
+    def add_exercise(self, name, source='#include <stdio.h>\nint main(void){puts("ok");}\n'):
+        self.counter += 1
+        directory = self.root / "Exercises" / name
+        directory.mkdir(parents=True)
+        (directory / "Ques.c").write_text(source, encoding="utf-8")
+        (directory / "Ques.c.bak").write_text(source, encoding="utf-8")
+        (directory / "description.md").write_text("# Test\n", encoding="utf-8")
+        (directory / "metadata.json").write_text(json.dumps({"title": "Test", "order": self.counter}), encoding="utf-8")
+        (directory / "Test.txt").write_text("INPUT:\nOUTPUT:\nok\n", encoding="utf-8")
+        return directory
+
+    def test_missing_exercise_is_reported_for_every_command(self):
+        self.add_exercise("01-one")
+        cases = [
+            ("status", lambda: cstudy.command_status(type("Args", (), {"exercise": "missing"})())),
+            ("edit", lambda: cstudy.command_edit(type("Args", (), {"exercise": "missing"})())),
+            ("skip", lambda: cstudy.command_skip(type("Args", (), {"exercise": "missing"})())),
+            ("next", lambda: cstudy.command_next(type("Args", (), {"exercise": "missing"})())),
+            ("chat", lambda: cstudy.command_chat(type("Args", (), {"exercise": "missing"})())),
+        ]
+        for name, call in cases:
+            errors = io.StringIO()
+            with contextlib.redirect_stderr(errors):
+                result = call()
+            self.assertEqual(result, cstudy.EXIT_USAGE, name)
+            self.assertIn("exercise not found: missing", errors.getvalue(), name)
+
+    def check_args(self, all_exercises):
+        return type("Args", (), {"exercise": None, "all": all_exercises, "json": True,
+                                 "quiet": False, "timeout": 1.0, "total_timeout": 3.0})()
+
+    def test_check_without_id_only_grades_the_current_exercise(self):
+        self.add_exercise("01-one")
+        self.add_exercise("02-two")
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            result = cstudy.command_check(self.check_args(False))
+        report = json.loads(output.getvalue())
+        self.assertEqual(result, cstudy.EXIT_OK)
+        self.assertEqual(report["total"], 1)
+
+    def test_default_jobs_is_bounded(self):
+        self.assertEqual(cstudy.default_jobs(0), 1)
+        self.assertEqual(cstudy.default_jobs(1), 1)
+        self.assertGreaterEqual(cstudy.default_jobs(2), 1)
+        self.assertLessEqual(cstudy.default_jobs(10 ** 6), 8)
+
+    def test_parallel_grading_matches_serial_grading(self):
+        self.add_exercise("01-one")
+        self.add_exercise("02-two", source='#include <stdio.h>\nint main(void){puts("bad");}\n')
+        reports = []
+        for jobs in (1, 2):
+            args = type("Args", (), {"exercise": None, "all": True, "json": True, "quiet": True,
+                                     "timeout": 1.0, "total_timeout": 3.0, "jobs": jobs})()
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                result = cstudy.command_check(args)
+            report = json.loads(output.getvalue())
+            reports.append((result, report["total"], [item["status"] for item in report["results"]]))
+        self.assertEqual(reports[0], reports[1])
+        self.assertEqual(reports[0][2], ["passed", "output_mismatch"])
+
+    def test_check_all_grades_every_exercise(self):
+        self.add_exercise("01-one")
+        self.add_exercise("02-two")
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            result = cstudy.command_check(self.check_args(True))
+        report = json.loads(output.getvalue())
+        self.assertEqual(result, cstudy.EXIT_OK)
+        self.assertEqual(report["total"], 2)
+
+    def test_current_state_is_read_only_and_save_prunes(self):
+        self.add_exercise("01-one")
+        cstudy.STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        cstudy.STATE_FILE.write_text(json.dumps({
+            "version": 1, "current": "gone",
+            "exercises": {"gone": {"status": "passed"}, "01-one": {"status": "passed"}}}), encoding="utf-8")
+        before = cstudy.STATE_FILE.read_bytes()
+        state = cstudy.current_state()
+        self.assertEqual(cstudy.STATE_FILE.read_bytes(), before)
+        self.assertIn("gone", state["exercises"])
+        cstudy.save_state(state)
+        saved = json.loads(cstudy.STATE_FILE.read_text(encoding="utf-8"))
+        self.assertNotIn("gone", saved["exercises"])
+        self.assertIsNone(saved["current"])
+
+    def test_record_keeps_a_bounded_summary(self):
+        directory = self.add_exercise("01-one")
+        result = {"status": "output_mismatch", "duration_ms": 12, "compile": {"stderr": ""},
+                  "cases": [{"passed": False, "input": "x" * 5000, "expected": "y" * 5000,
+                             "actual": "", "error": "", "duration_ms": 1} for _ in range(10)]}
+        state = {"version": 1, "exercises": {}, "current": None}
+        cstudy.record(directory, result, state)
+        item = state["exercises"]["01-one"]
+        self.assertIsInstance(item["last_result"]["cases"], int)
+        self.assertEqual(item["last_result"]["cases"], 10)
+        self.assertEqual(len(item["last_result"]["failures"]), 3)
+        self.assertLess(len(json.dumps(item, ensure_ascii=False)), 3000)
+        self.assertIn("at", item)
+
+    def test_legacy_full_result_is_compacted_on_read(self):
+        self.add_exercise("01-one")
+        legacy = {"status": "output_mismatch", "duration_ms": 5,
+                  "cases": [{"passed": False, "input": "a", "expected": "b", "actual": "c", "error": ""}]}
+        cstudy.STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        cstudy.STATE_FILE.write_text(json.dumps({
+            "version": 1, "current": None,
+            "exercises": {"01-one": {"status": "output_mismatch", "last_result": legacy}}}), encoding="utf-8")
+        state = cstudy.current_state()
+        self.assertIsInstance(state["exercises"]["01-one"]["last_result"]["cases"], int)
+
+    def test_log_rotation_keeps_one_backup(self):
+        old = cstudy.MAX_LOG_BYTES
+        cstudy.MAX_LOG_BYTES = 200
+        self.addCleanup(setattr, cstudy, "MAX_LOG_BYTES", old)
+        for _ in range(3):
+            cstudy.log_result({"status": "passed",
+                               "cases": [{"passed": True, "input": "", "expected": "", "actual": "x" * 100}]})
+        names = sorted(path.name for path in cstudy.LOG_DIR.glob("*.jsonl*"))
+        self.assertTrue(any(name.endswith(".jsonl") for name in names), names)
+        self.assertTrue(any(name.endswith(".jsonl.1") for name in names), names)
+
+
+    def test_progress_reports_counts_and_current(self):
+        self.add_exercise("01-one")
+        self.add_exercise("02-two")
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            result = cstudy.command_progress(type("Args", (), {"all": False, "json": True})())
+        report = json.loads(output.getvalue())
+        self.assertEqual(result, cstudy.EXIT_OK)
+        self.assertEqual(report["total"], 2)
+        self.assertEqual(report["completed"], 0)
+        self.assertEqual(report["current"], "01-one")
+
+    def test_next_without_argument_selects_the_first_unfinished(self):
+        self.add_exercise("01-one")
+        self.add_exercise("02-two")
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            result = cstudy.command_next(type("Args", (), {"exercise": None})())
+        self.assertEqual(result, cstudy.EXIT_OK)
+        self.assertIn("next: 01-one", output.getvalue())
+        self.assertEqual(cstudy.current_state()["current"], "01-one")
+
+    def test_prev_moves_back_one_exercise(self):
+        self.add_exercise("01-one")
+        self.add_exercise("02-two")
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            result = cstudy.command_move(type("Args", (), {"exercise": "02-two"})(), -1)
+        self.assertEqual(result, cstudy.EXIT_OK)
+        self.assertIn("01-one", output.getvalue())
+        self.assertEqual(cstudy.current_state()["current"], "01-one")
+
+    def test_reset_restores_sources_and_clears_progress(self):
+        directory = self.add_exercise("01-one")
+        (directory / "Ques.c").write_text("broken\n", encoding="utf-8")
+        (directory / "done.flag").write_text("done\n", encoding="utf-8")
+        cstudy.save_state({"version": 1, "current": "01-one", "exercises": {"01-one": {"status": "passed"}}})
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            result = cstudy.command_reset(type("Args", (), {"json": False})())
+        self.assertEqual(result, cstudy.EXIT_OK)
+        self.assertEqual((directory / "Ques.c").read_text(encoding="utf-8"),
+                         (directory / "Ques.c.bak").read_text(encoding="utf-8"))
+        self.assertFalse((directory / "done.flag").exists())
+        self.assertEqual(cstudy.current_state()["exercises"], {})
+
+
+class TestWatchCommands(unittest.TestCase):
+    """The typed command prompt and the single keys must stay in sync."""
+
+    def test_parse_accepts_prefixes_aliases_and_arguments(self):
+        self.assertEqual(cstudy.parse_watch_command("hint"), ("hint", ""))
+        self.assertEqual(cstudy.parse_watch_command("/hint"), ("hint", ""))
+        self.assertEqual(cstudy.parse_watch_command(":h"), ("hint", ""))
+        self.assertEqual(cstudy.parse_watch_command("  goto   12 "), ("goto", "12"))
+        self.assertEqual(cstudy.parse_watch_command(""), ("", ""))
+        self.assertEqual(cstudy.parse_watch_command("   "), ("", ""))
+        self.assertEqual(cstudy.parse_watch_command("unknown arg"), ("unknown", "arg"))
+
+    def test_every_advertised_command_and_alias_is_dispatchable(self):
+        for name, _description, _takes in cstudy.WATCH_COMMANDS:
+            self.assertIn(name.lstrip("/"), cstudy.WATCH_ACTIONS, name)
+        for alias, verb in cstudy.WATCH_ALIASES.items():
+            self.assertIn(verb, cstudy.WATCH_ACTIONS, alias)
+
+    def test_help_body_lists_commands_and_keys(self):
+        text = "\n".join(cstudy.console_ux.ANSI_RE.sub("", line) for line in cstudy.watch_help_lines())
+        self.assertIn("/goto", text)
+        self.assertIn("/follow", text)
+        self.assertIn("PgUp/PgDn", text)
+
+
+class TestWatchFrame(unittest.TestCase):
+    """The watch screen is a fixed frame: header, viewport, result block, footer."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.patcher = mock.patch.multiple(
+            cstudy,
+            EXERCISES=self.root / "Exercises",
+            STATE_DIR=self.root / ".cstudy",
+            STATE_FILE=self.root / ".cstudy" / "state.json")
+        self.patcher.start()
+        self.addCleanup(self.patcher.stop)
+        self.addCleanup(self.temp.cleanup)
+        self.target = self.add_exercise("02-basics/hello", "标题", "描述文本。", "提示一。")
+
+    def add_exercise(self, name, title, description, hint):
+        directory = self.root / "Exercises" / name
+        directory.mkdir(parents=True)
+        source = '#include <stdio.h>\nint main(void){puts("hi");}\n\n// Done\n'
+        (directory / "Ques.c").write_text(source, encoding="utf-8")
+        (directory / "Ques.c.bak").write_text(source, encoding="utf-8")
+        (directory / "description.md").write_text(
+            f"# {title}\n\n## \u9898\u76ee\u63cf\u8ff0\n\n{description}\n\n## \u63d0\u793a\n\n- {hint}\n", encoding="utf-8")
+        (directory / "metadata.json").write_text(json.dumps({"title": title, "order": 1}), encoding="utf-8")
+        (directory / "Test.txt").write_text("INPUT:\nOUTPUT:\nhi\n", encoding="utf-8")
+        return directory
+
+    def frame(self, columns, rows, hint=False, scroll=0, follow=True, show_help=False):
+        with mock.patch.dict(os.environ, {"COLUMNS": str(columns), "LINES": str(rows)}):
+            return cstudy.build_watch_frame(self.target, cstudy.current_state(), cstudy.discover(),
+                                            None, hint, scroll, "status", follow, show_help)
+
+    def plain(self, lines):
+        return "\n".join(cstudy.console_ux.ANSI_RE.sub("", line) for line in lines)
+
+    def test_frame_fits_the_terminal_and_keeps_the_progress_bar(self):
+        for columns, rows in ((80, 24), (120, 30), (64, 20), (40, 12)):
+            lines = self.frame(columns, rows)
+            self.assertLessEqual(len(lines), rows, (columns, rows))
+            self.assertIn("Progress: [", lines[1], (columns, rows))
+            self.assertIn("[n] ", lines[-1], (columns, rows))
+
+    def test_hint_view_replaces_the_statement(self):
+        text = self.plain(self.frame(100, 30, hint=True))
+        self.assertIn("\u63d0\u793a\u4e00", text)
+        self.assertIn("\u7b2c\u4e00\u4e2a\u7528\u4f8b", text)
+        self.assertNotIn("\u63cf\u8ff0\u6587\u672c", text)
+
+    def test_scroll_is_clamped_to_the_body(self):
+        paragraphs = "\n\n".join(f"段落 {index}。" for index in range(40))
+        (self.target / "description.md").write_text(
+            f"# 标题\n\n## 题目描述\n\n{paragraphs}\n", encoding="utf-8")
+        lines = self.frame(80, 24, scroll=10 ** 6)
+        self.assertLessEqual(len(lines), 24)
+        self.assertIn("PgUp/PgDn", self.plain(lines))
+
+    def test_frame_shows_follow_state_and_help_body(self):
+        self.assertIn("[\u8ddf\u968f]", self.plain(self.frame(100, 30)))
+        self.assertIn("[\u8ddf\u968f:\u5173]", self.plain(self.frame(100, 30, follow=False)))
+        help_text = self.plain(self.frame(100, 30, show_help=True))
+        self.assertIn("/goto", help_text)
+        self.assertIn("\u5e2e\u52a9", help_text)
+
+    def test_latest_modified_exercise_tracks_the_newest_file(self):
+        second = self.add_exercise("03-more/two", "Two", "d", "h")
+        base = time.time() - 100
+        os.utime(self.target / "Ques.c", (base, base))
+        os.utime(second / "Ques.c", (base + 50, base + 50))
+        self.assertEqual(cstudy.latest_modified_exercise(cstudy.discover()), second)
+        os.utime(second / "Ques.c", (base, base))
+        os.utime(self.target / "Ques.c", (base + 50, base + 50))
+        self.assertEqual(cstudy.latest_modified_exercise(cstudy.discover()), self.target)
+
+    def test_normalise_exercise_hint_accepts_ids_and_paths(self):
+        self.assertEqual(cstudy.normalise_exercise_hint("02-basics/hello"), "02-basics/hello")
+        self.assertEqual(cstudy.normalise_exercise_hint("Exercises/02-basics/hello"), "02-basics/hello")
+        self.assertEqual(cstudy.normalise_exercise_hint(r"D:\repo\Exercises\02-basics\hello\Ques.c"),
+                         "02-basics/hello")
+        self.assertEqual(cstudy.normalise_exercise_hint('"/repo/Exercises/03-more/two/Ques.c"'),
+                         "03-more/two")
+        self.assertEqual(cstudy.normalise_exercise_hint(""), "")
+
+    def test_active_file_selects_the_named_exercise(self):
+        second = self.add_exercise("03-more/two", "Two", "d", "h")
+        active = self.root / ".cstudy" / "active"
+        active.parent.mkdir(parents=True, exist_ok=True)
+        self.assertIsNone(cstudy.active_file_exercise(active))
+        active.write_text("03-more/two\n", encoding="utf-8")
+        self.assertEqual(cstudy.active_file_exercise(active), second)
+        active.write_text(str(second / "Ques.c"), encoding="utf-8")
+        self.assertEqual(cstudy.active_file_exercise(active), second)
+        active.write_text("nope", encoding="utf-8")
+        self.assertIsNone(cstudy.active_file_exercise(active))
+        active.write_text("", encoding="utf-8")
+        self.assertIsNone(cstudy.active_file_exercise(active))
+
+    def test_follow_target_ignores_older_and_repeated_files(self):
+        second = self.add_exercise("03-more/two", "Two", "d", "h")
+        base = time.time() - 100
+        os.utime(self.target / "Ques.c", (base + 50, base + 50))
+        os.utime(second / "Ques.c", (base, base))
+        exercises = cstudy.discover()
+        self.assertIsNone(cstudy.follow_target(exercises, self.target, self.target / "Ques.c", 0))
+        os.utime(second / "Ques.c", (base + 100, base + 100))
+        stamp = (second / "Ques.c").stat().st_mtime_ns
+        self.assertEqual(cstudy.follow_target(exercises, self.target, self.target / "Ques.c", 0), second)
+        self.assertIsNone(cstudy.follow_target(exercises, self.target, self.target / "Ques.c", stamp))
+
+    def test_memory_limit_helper_tolerates_missing_handles(self):
+        self.assertIsNone(cstudy.limit_process_memory(None))
+        cstudy.release_process_memory(None)
+
+    def test_discovery_cache_is_invalidated_on_demand(self):
+        self.assertEqual([item.name for item in cstudy.discover()], ["hello"])
+        self.add_exercise("03-more/two", "Two", "d", "h")
+        self.assertEqual([item.name for item in cstudy.discover()], ["hello"])
+        cstudy.invalidate_caches(discovery=True)
+        self.assertEqual(len(cstudy.discover()), 2)
 
 
 class TestApiAssistant(unittest.TestCase):
@@ -441,9 +803,9 @@ class TestConsoleUx(unittest.TestCase):
             self.assertLessEqual(cstudy.console_ux.visible_width(line), 40)
 
     def test_payload_shapes_for_both_modes(self):
-        chat = cstudy.build_ai_payload("m", "chat", [{"role": "user", "content": "hi"}])
+        chat = ai.build_payload("m", "chat", [{"role": "user", "content": "hi"}])
         self.assertEqual(chat["messages"][0], {"role": "user", "content": "hi"})
-        responses = cstudy.build_ai_payload("m", "responses", [{"role": "user", "content": "hi"}])
+        responses = ai.build_payload("m", "responses", [{"role": "user", "content": "hi"}])
         self.assertEqual(responses["input"][0]["content"][0]["type"], "input_text")
 
 
@@ -761,7 +1123,7 @@ class TestChatSlashFeedback(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("\u203a /help", plain)                       # what was submitted
         self.assertLess(plain.index("\u203a /help"),
-                        plain.index("Commands (type / for completion)"))
+                        plain.index("命令（输入 / 可补全）："))
         self.assertNotIn("unknown command", plain)
         self.assertIn("\u203a /exit", plain)
         self.assertTrue(plain.rstrip().endswith("bye"))
@@ -769,7 +1131,7 @@ class TestChatSlashFeedback(unittest.TestCase):
     def test_menu_explains_its_own_keys(self):
         code, plain = self.drive(["/", "ESC", "/", "e", "x", "i", "t", "\r"])
         self.assertEqual(code, 0)
-        self.assertIn("Enter run", plain)          # the menu hint while it is open
+        self.assertIn("Enter 执行", plain)          # the menu hint while it is open
         self.assertNotIn("nothing to interrupt", plain)
 
 
@@ -1024,7 +1386,7 @@ class TestStreamingAssistant(unittest.TestCase):
             os.environ.clear(); os.environ.update(old)
         self.assertEqual(code, 0)
         self.assertEqual(len(bodies), 1)
-        self.assertIn("interrupted", output.getvalue())
+        self.assertIn("已中断", output.getvalue())
 
 
     def test_chat_session_reports_reasoning(self):
@@ -1055,7 +1417,7 @@ class TestStreamingAssistant(unittest.TestCase):
             line = next(answers)
             if line == "/exit":
                 for _ in range(200):
-                    if "thought for" in output.getvalue():
+                    if "字符）" in output.getvalue():
                         break
                     time.sleep(0.05)
             return line
@@ -1072,7 +1434,7 @@ class TestStreamingAssistant(unittest.TestCase):
         finally:
             os.environ.clear(); os.environ.update(old)
         self.assertEqual(code, 0)
-        self.assertIn("thought for", output.getvalue())
+        self.assertIn("字符）", output.getvalue())
         self.assertIn("Answer", output.getvalue())
         # the reasoning itself accumulates in the transcript, not on one line
         self.assertIn("weighing options", output.getvalue())

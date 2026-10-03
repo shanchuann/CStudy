@@ -1,0 +1,24 @@
+INPUT:
+3 8
+OUTPUT:
+8 3
+---
+INPUT:
+-1 1
+OUTPUT:
+1 -1
+---
+INPUT:
+5 5
+OUTPUT:
+5 5
+---
+INPUT:
+0 0
+OUTPUT:
+0 0
+---
+INPUT:
+100 -100
+OUTPUT:
+-100 100

@@ -1,0 +1,20 @@
+INPUT:
+3
+Lin 80
+Mei 95
+Kai 88
+OUTPUT:
+Mei
+---
+INPUT:
+1
+A 60
+OUTPUT:
+A
+---
+INPUT:
+2
+A 90
+B 90
+OUTPUT:
+A

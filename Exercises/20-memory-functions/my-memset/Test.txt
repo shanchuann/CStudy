@@ -1,0 +1,23 @@
+INPUT:
+x 5
+OUTPUT:
+xxxxx
+---
+INPUT:
+- 0
+OUTPUT:
+---
+INPUT:
+a 1
+OUTPUT:
+a
+---
+INPUT:
+Z 15
+OUTPUT:
+ZZZZZZZZZZZZZZZ
+---
+INPUT:
+0 10
+OUTPUT:
+0000000000

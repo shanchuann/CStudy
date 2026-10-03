@@ -2,6 +2,10 @@
 .cstudy/
 __pycache__/
 *.py[cod]
+.ruff_cache/
+build/
+dist/
+*.egg-info/
 **/done.flag
 output/
 wsl.localhost/

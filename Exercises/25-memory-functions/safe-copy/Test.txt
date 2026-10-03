@@ -1,4 +1,0 @@
-INPUT:
-abcd
-OUTPUT:
-bcda

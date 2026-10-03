@@ -1,0 +1,24 @@
+INPUT:
+7 Lin 95.5
+OUTPUT:
+id=7 name=Lin score=95.5
+---
+INPUT:
+1 A 0
+OUTPUT:
+id=1 name=A score=0.0
+---
+INPUT:
+42 Bob 100
+OUTPUT:
+id=42 name=Bob score=100.0
+---
+INPUT:
+3 Zoe 59.9
+OUTPUT:
+id=3 name=Zoe score=59.9
+---
+INPUT:
+5 abcdefghijklmnopqrstuvwxyz01234 12.3
+OUTPUT:
+id=5 name=abcdefghijklmnopqrstuvwxyz01234 score=12.3

@@ -1,0 +1,14 @@
+INPUT:
+hello world
+OUTPUT:
+hello world
+---
+INPUT:
+  keep spaces  
+OUTPUT:
+  keep spaces  
+---
+INPUT:
+a
+OUTPUT:
+a

@@ -1,4 +1,0 @@
-INPUT:
-42
-OUTPUT:
-42

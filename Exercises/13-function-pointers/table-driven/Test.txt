@@ -1,0 +1,39 @@
+INPUT:
++ 3 4
+OUTPUT:
+7
+---
+INPUT:
+* 3 4
+OUTPUT:
+12
+---
+INPUT:
+- 3 4
+OUTPUT:
+-1
+---
+INPUT:
+/ 8 2
+OUTPUT:
+4
+---
+INPUT:
+/ 8 0
+OUTPUT:
+error
+---
+INPUT:
+% 3 4
+OUTPUT:
+error
+---
+INPUT:
+- 3 -4
+OUTPUT:
+7
+---
+INPUT:
+/ -7 2
+OUTPUT:
+-3

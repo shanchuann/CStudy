@@ -1,0 +1,23 @@
+INPUT:
+3
+1 2 3
+OUTPUT:
+sum=6 avg=2.00
+---
+INPUT:
+1
+5
+OUTPUT:
+sum=5 avg=5.00
+---
+INPUT:
+4
+1 1 1 2
+OUTPUT:
+sum=5 avg=1.25
+---
+INPUT:
+2
+-5 5
+OUTPUT:
+sum=0 avg=0.00

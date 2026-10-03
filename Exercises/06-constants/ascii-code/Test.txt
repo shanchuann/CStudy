@@ -1,0 +1,14 @@
+INPUT:
+A
+OUTPUT:
+code=65 next=B
+---
+INPUT:
+a
+OUTPUT:
+code=97 next=b
+---
+INPUT:
+0
+OUTPUT:
+code=48 next=1

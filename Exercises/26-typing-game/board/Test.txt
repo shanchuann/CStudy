@@ -1,0 +1,17 @@
+INPUT:
+3 4 A 1
+OUTPUT:
+....
+A...
+....
+---
+INPUT:
+1 3 B 0
+OUTPUT:
+B..
+---
+INPUT:
+2 2 x 1
+OUTPUT:
+..
+x.

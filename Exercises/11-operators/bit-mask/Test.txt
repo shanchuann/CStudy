@@ -1,0 +1,29 @@
+INPUT:
+0 2
+OUTPUT:
+set=4 clear=0 toggle=4 test=0
+---
+INPUT:
+5 0
+OUTPUT:
+set=5 clear=4 toggle=4 test=1
+---
+INPUT:
+255 3
+OUTPUT:
+set=255 clear=247 toggle=247 test=1
+---
+INPUT:
+0 0
+OUTPUT:
+set=1 clear=0 toggle=1 test=0
+---
+INPUT:
+128 7
+OUTPUT:
+set=128 clear=0 toggle=0 test=1
+---
+INPUT:
+170 5
+OUTPUT:
+set=170 clear=138 toggle=138 test=1

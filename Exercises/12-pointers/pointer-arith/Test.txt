@@ -1,0 +1,29 @@
+INPUT:
+5
+1 2 3 4 5
+OUTPUT:
+sum=15 span=4
+---
+INPUT:
+1
+7
+OUTPUT:
+sum=7 span=0
+---
+INPUT:
+3
+-1 -2 -3
+OUTPUT:
+sum=-6 span=2
+---
+INPUT:
+4
+10 20 30 40
+OUTPUT:
+sum=100 span=3
+---
+INPUT:
+10
+0 1 2 3 4 5 6 7 8 9
+OUTPUT:
+sum=45 span=9

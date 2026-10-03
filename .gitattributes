@@ -1,0 +1,8 @@
+# Keep every text file LF-only so Windows and POSIX checkouts match.
+# core.autocrlf is false in this repository, so this file is the single source of truth.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.gif binary

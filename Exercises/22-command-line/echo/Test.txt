@@ -1,0 +1,22 @@
+ARGS: hello world
+INPUT:
+OUTPUT:
+hello world
+---
+INPUT:
+OUTPUT:
+---
+ARGS: a
+INPUT:
+OUTPUT:
+a
+---
+ARGS: one two three
+INPUT:
+OUTPUT:
+one two three
+---
+ARGS: C is fun
+INPUT:
+OUTPUT:
+C is fun

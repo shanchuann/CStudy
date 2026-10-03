@@ -1,0 +1,17 @@
+INPUT:
+7
+OUTPUT:
+text=n
+value=42
+---
+INPUT:
+0
+OUTPUT:
+text=n
+value=42
+---
+INPUT:
+123
+OUTPUT:
+text=n
+value=42

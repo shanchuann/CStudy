@@ -1,3 +1,3 @@
 INPUT:
 OUTPUT:
-42
+value=42 pi=3.14

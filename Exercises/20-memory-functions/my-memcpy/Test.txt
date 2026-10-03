@@ -1,0 +1,24 @@
+INPUT:
+cstudy
+OUTPUT:
+src=cstudy dst=cstudy equal=yes
+---
+INPUT:
+a
+OUTPUT:
+src=a dst=a equal=yes
+---
+INPUT:
+HelloWorld
+OUTPUT:
+src=HelloWorld dst=HelloWorld equal=yes
+---
+INPUT:
+!@#$%^&*()
+OUTPUT:
+src=!@#$%^&*() dst=!@#$%^&*() equal=yes
+---
+INPUT:
+abcdefghijklmnopqrstuvwxyz0123
+OUTPUT:
+src=abcdefghijklmnopqrstuvwxyz0123 dst=abcdefghijklmnopqrstuvwxyz0123 equal=yes

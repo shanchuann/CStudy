@@ -1,4 +1,0 @@
-INPUT:
-hello
-OUTPUT:
-olleh

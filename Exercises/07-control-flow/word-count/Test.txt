@@ -1,0 +1,19 @@
+INPUT:
+hello world
+OUTPUT:
+words=2 chars=11
+---
+INPUT:
+  
+OUTPUT:
+words=0 chars=2
+---
+INPUT:
+a
+OUTPUT:
+words=1 chars=1
+---
+INPUT:
+one two three
+OUTPUT:
+words=3 chars=13

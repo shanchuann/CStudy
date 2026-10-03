@@ -1,0 +1,4 @@
+INPUT:
+OUTPUT:
+fixed=1 4 8
+count=8

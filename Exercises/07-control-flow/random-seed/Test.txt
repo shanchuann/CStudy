@@ -1,0 +1,17 @@
+INPUT:
+8
+OUTPUT:
+repeat=yes
+differ=yes
+---
+INPUT:
+64
+OUTPUT:
+repeat=yes
+differ=yes
+---
+INPUT:
+1
+OUTPUT:
+repeat=yes
+differ=yes

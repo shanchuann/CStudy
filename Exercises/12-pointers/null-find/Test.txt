@@ -1,0 +1,35 @@
+INPUT:
+5 7
+1 3 5 7 9
+OUTPUT:
+index=3
+---
+INPUT:
+4 6
+1 3 5 7
+OUTPUT:
+not found
+---
+INPUT:
+1 5
+5
+OUTPUT:
+index=0
+---
+INPUT:
+3 1
+1 1 1
+OUTPUT:
+index=0
+---
+INPUT:
+6 9
+1 2 3 4 5 6
+OUTPUT:
+not found
+---
+INPUT:
+2 -3
+-3 -3
+OUTPUT:
+index=0

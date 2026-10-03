@@ -28,8 +28,6 @@
     {"id": "24-algorithms", "title": "查找与排序", "page": "algorithms"},
     {"id": "25-debugging", "title": "调试与可移植性", "page": "debugging-portability"},
     {"id": "26-typing-game", "title": "打字母游戏", "page": "typing-game"},
-    {"id": "27-student-project", "title": "学生成绩管理系统", "page": "student-project"},
-    {"id": "28-next-steps", "title": "下一步学习方向", "page": "next-steps"},
-    {"id": "29-appendix", "title": "附件与速查", "page": "appendix"}
+    {"id": "27-student-project", "title": "学生成绩管理系统", "page": "student-project"}
   ]
 }

@@ -1,0 +1,14 @@
+INPUT:
+1
+OUTPUT:
+c=6.28 s=3.14
+---
+INPUT:
+2
+OUTPUT:
+c=12.57 s=12.57
+---
+INPUT:
+0.5
+OUTPUT:
+c=3.14 s=0.79

@@ -1,0 +1,53 @@
+ARGS: add 3 4
+INPUT:
+OUTPUT:
+7
+---
+ARGS: mul 3 4
+INPUT:
+OUTPUT:
+12
+---
+ARGS: max 3 4
+INPUT:
+OUTPUT:
+4
+---
+ARGS: div 3 4
+INPUT:
+OUTPUT:
+unknown
+---
+ARGS: add 3
+INPUT:
+OUTPUT:
+unknown
+---
+ARGS: add -3 4
+INPUT:
+OUTPUT:
+1
+---
+ARGS: max -5 -2
+INPUT:
+OUTPUT:
+-2
+---
+ARGS: mul 0 7
+INPUT:
+OUTPUT:
+0
+---
+ARGS: add x 4
+INPUT:
+OUTPUT:
+unknown
+---
+INPUT:
+OUTPUT:
+unknown
+---
+ARGS: add 3 4 5
+INPUT:
+OUTPUT:
+unknown

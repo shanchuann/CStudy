@@ -1,0 +1,1 @@
+{"title": "extern 共享状态", "difficulty": "hard", "tags": ["multi-file", "extern"], "order": 1703, "status": "active", "sources": ["Ques.c", "counter.c", "counter.h"]}

@@ -1,0 +1,13 @@
+INPUT:
+3
+1,Lin,80.0
+2,Mei,95.5
+3,Kai,88.0
+OUTPUT:
+count=3 top=2
+---
+INPUT:
+1
+7,A,60.0
+OUTPUT:
+count=1 top=7

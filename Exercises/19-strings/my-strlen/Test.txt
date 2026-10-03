@@ -1,0 +1,14 @@
+INPUT:
+hello
+OUTPUT:
+len=5 size=101
+---
+INPUT:
+a
+OUTPUT:
+len=1 size=101
+---
+INPUT:
+abcdefghij
+OUTPUT:
+len=10 size=101

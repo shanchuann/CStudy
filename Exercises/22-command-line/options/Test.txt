@@ -1,0 +1,43 @@
+ARGS: -n Lin -a 18
+INPUT:
+OUTPUT:
+name=Lin age=18
+---
+ARGS: -a 18 -n Lin
+INPUT:
+OUTPUT:
+name=Lin age=18
+---
+ARGS: -n Lin
+INPUT:
+OUTPUT:
+invalid
+---
+ARGS: -x 1 -n Lin -a 2
+INPUT:
+OUTPUT:
+invalid
+---
+ARGS: -n Lin -a
+INPUT:
+OUTPUT:
+invalid
+---
+ARGS: -a 18
+INPUT:
+OUTPUT:
+invalid
+---
+ARGS: -n Lin -a 18 extra
+INPUT:
+OUTPUT:
+invalid
+---
+ARGS: -n A -n B -a 1
+INPUT:
+OUTPUT:
+invalid
+---
+INPUT:
+OUTPUT:
+invalid

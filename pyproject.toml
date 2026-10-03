@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cstudy"
+description = "Cross-platform interactive C learning CLI with automatic grading"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE.txt" }
+dependencies = []
+dynamic = ["version"]
+
+[project.scripts]
+cstudy = "cstudy:main"
+
+[project.urls]
+Homepage = "https://github.com/shanchuann/CStudy"
+
+[tool.setuptools]
+py-modules = ["cstudy", "console_ux", "console_render", "console_input", "ai", "chat"]
+
+[tool.setuptools.dynamic]
+version = { attr = "cstudy.VERSION" }

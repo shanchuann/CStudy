@@ -1,0 +1,34 @@
+INPUT:
+300
+OUTPUT:
+low=44 mid=300 wide=44
+---
+INPUT:
+-1
+OUTPUT:
+low=255 mid=65535 wide=255
+---
+INPUT:
+0
+OUTPUT:
+low=0 mid=0 wide=0
+---
+INPUT:
+255
+OUTPUT:
+low=255 mid=255 wide=255
+---
+INPUT:
+256
+OUTPUT:
+low=0 mid=256 wide=0
+---
+INPUT:
+-100000
+OUTPUT:
+low=96 mid=31072 wide=96
+---
+INPUT:
+100000
+OUTPUT:
+low=160 mid=34464 wide=160

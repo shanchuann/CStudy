@@ -1,0 +1,14 @@
+INPUT:
+hello
+OUTPUT:
+olleh
+---
+INPUT:
+a
+OUTPUT:
+a
+---
+INPUT:
+abcd
+OUTPUT:
+dcba

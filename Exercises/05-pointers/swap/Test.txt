@@ -1,4 +1,0 @@
-INPUT:
-3 8
-OUTPUT:
-8 3

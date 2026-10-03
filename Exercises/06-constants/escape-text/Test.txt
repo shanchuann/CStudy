@@ -1,0 +1,22 @@
+INPUT:
+OUTPUT:
+A	B
+"C"
+C:\dir\file
+100%
+---
+INPUT:
+x
+OUTPUT:
+A	B
+"C"
+C:\dir\file
+100%
+---
+INPUT:
+hello world
+OUTPUT:
+A	B
+"C"
+C:\dir\file
+100%

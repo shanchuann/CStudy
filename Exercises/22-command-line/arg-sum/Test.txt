@@ -1,0 +1,38 @@
+ARGS: 1 2 3
+INPUT:
+OUTPUT:
+6
+---
+ARGS: 1 x
+INPUT:
+OUTPUT:
+invalid
+---
+INPUT:
+OUTPUT:
+0
+---
+ARGS: -5 10
+INPUT:
+OUTPUT:
+5
+---
+ARGS: 12abc
+INPUT:
+OUTPUT:
+invalid
+---
+ARGS: +7 -3
+INPUT:
+OUTPUT:
+4
+---
+ARGS: 1000000 -1000000
+INPUT:
+OUTPUT:
+0
+---
+ARGS: 99999999999999999999
+INPUT:
+OUTPUT:
+invalid

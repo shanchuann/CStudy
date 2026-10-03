@@ -1,0 +1,22 @@
+INPUT:
+3
+1 2 3
+OUTPUT:
+calls=3 sum=6
+---
+INPUT:
+0
+OUTPUT:
+calls=0 sum=0
+---
+INPUT:
+1
+-5
+OUTPUT:
+calls=1 sum=-5
+---
+INPUT:
+5
+0 0 0 0 0
+OUTPUT:
+calls=5 sum=0

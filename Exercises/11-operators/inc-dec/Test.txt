@@ -1,0 +1,24 @@
+INPUT:
+5
+OUTPUT:
+post=5 pre=6 x=6 y=6
+---
+INPUT:
+-1
+OUTPUT:
+post=-1 pre=0 x=0 y=0
+---
+INPUT:
+0
+OUTPUT:
+post=0 pre=1 x=1 y=1
+---
+INPUT:
+42
+OUTPUT:
+post=42 pre=43 x=43 y=43
+---
+INPUT:
+-1000000
+OUTPUT:
+post=-1000000 pre=-999999 x=-999999 y=-999999

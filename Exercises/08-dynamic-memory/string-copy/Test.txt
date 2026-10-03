@@ -1,4 +1,0 @@
-INPUT:
-cstudy
-OUTPUT:
-cstudy

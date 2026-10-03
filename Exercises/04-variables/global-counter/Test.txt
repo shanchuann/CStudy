@@ -1,0 +1,19 @@
+INPUT:
+3
+OUTPUT:
+before=0 after=3
+---
+INPUT:
+0
+OUTPUT:
+before=0 after=0
+---
+INPUT:
+1
+OUTPUT:
+before=0 after=1
+---
+INPUT:
+1000
+OUTPUT:
+before=0 after=1000

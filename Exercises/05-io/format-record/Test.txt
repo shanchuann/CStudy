@@ -1,0 +1,29 @@
+INPUT:
+Lin 95
+OUTPUT:
+Lin: 95
+---
+INPUT:
+A 0
+OUTPUT:
+A: 0
+---
+INPUT:
+Bob -3
+OUTPUT:
+Bob: -3
+---
+INPUT:
+Z 2147483647
+OUTPUT:
+Z: 2147483647
+---
+INPUT:
+abcdefghij -1000000
+OUTPUT:
+abcdefghij: -1000000
+---
+INPUT:
+x 42
+OUTPUT:
+x: 42

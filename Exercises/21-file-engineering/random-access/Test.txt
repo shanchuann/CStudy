@@ -1,0 +1,34 @@
+INPUT:
+3
+10 20 30
+1
+OUTPUT:
+value=20 size=12
+---
+INPUT:
+1
+7
+0
+OUTPUT:
+value=7 size=4
+---
+INPUT:
+5
+-1 -2 -3 -4 -5
+4
+OUTPUT:
+value=-5 size=20
+---
+INPUT:
+4
+2147483647 -2147483648 0 1
+0
+OUTPUT:
+value=2147483647 size=16
+---
+INPUT:
+2
+100 200
+1
+OUTPUT:
+value=200 size=8

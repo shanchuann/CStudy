@@ -1,0 +1,29 @@
+INPUT:
+7 2
+OUTPUT:
+q=3 r=1
+---
+INPUT:
+-7 2
+OUTPUT:
+q=-3 r=-1
+---
+INPUT:
+7 -2
+OUTPUT:
+q=-3 r=1
+---
+INPUT:
+0 5
+OUTPUT:
+q=0 r=0
+---
+INPUT:
+-7 -2
+OUTPUT:
+q=3 r=-1
+---
+INPUT:
+10000 3
+OUTPUT:
+q=3333 r=1

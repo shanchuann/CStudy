@@ -1,0 +1,14 @@
+INPUT:
+3
+OUTPUT:
+ok
+---
+INPUT:
+0
+OUTPUT:
+error
+---
+INPUT:
+-1
+OUTPUT:
+error

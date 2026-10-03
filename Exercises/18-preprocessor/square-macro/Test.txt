@@ -1,0 +1,19 @@
+INPUT:
+3 4
+OUTPUT:
+sum_square=49 double_square=18
+---
+INPUT:
+-2 1
+OUTPUT:
+sum_square=1 double_square=8
+---
+INPUT:
+5 -5
+OUTPUT:
+sum_square=0 double_square=50
+---
+INPUT:
+0 0
+OUTPUT:
+sum_square=0 double_square=0

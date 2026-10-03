@@ -1,0 +1,14 @@
+INPUT:
+a a
+OUTPUT:
+hit
+---
+INPUT:
+a b
+OUTPUT:
+miss
+---
+INPUT:
+A a
+OUTPUT:
+miss

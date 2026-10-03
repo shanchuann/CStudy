@@ -1,0 +1,13 @@
+INPUT:
+3
+Lin 80
+Mei 95.5
+Kai 88
+OUTPUT:
+count=3 avg=87.83 top=Mei
+---
+INPUT:
+1
+A 60
+OUTPUT:
+count=1 avg=60.00 top=A

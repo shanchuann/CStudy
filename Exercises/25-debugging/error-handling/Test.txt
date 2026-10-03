@@ -1,0 +1,20 @@
+INPUT:
+3
+1 2 3
+OUTPUT:
+sum=6
+---
+INPUT:
+0
+OUTPUT:
+error
+---
+INPUT:
+-5
+OUTPUT:
+error
+---
+INPUT:
+100001
+OUTPUT:
+error

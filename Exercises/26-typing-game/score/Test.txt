@@ -2,3 +2,13 @@ INPUT:
 hello healo
 OUTPUT:
 4
+---
+INPUT:
+abc abc
+OUTPUT:
+3
+---
+INPUT:
+abc xyz
+OUTPUT:
+0

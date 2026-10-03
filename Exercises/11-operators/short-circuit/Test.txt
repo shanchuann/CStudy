@@ -1,0 +1,19 @@
+INPUT:
+0 0
+OUTPUT:
+calls=1
+---
+INPUT:
+0 1
+OUTPUT:
+calls=0
+---
+INPUT:
+1 0
+OUTPUT:
+calls=2
+---
+INPUT:
+1 1
+OUTPUT:
+calls=1

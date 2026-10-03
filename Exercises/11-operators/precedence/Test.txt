@@ -2,3 +2,23 @@ INPUT:
 2 3 4
 OUTPUT:
 20
+---
+INPUT:
+1 -2 5
+OUTPUT:
+-5
+---
+INPUT:
+0 0 9
+OUTPUT:
+0
+---
+INPUT:
+-3 -4 -2
+OUTPUT:
+14
+---
+INPUT:
+1000 2000 -3
+OUTPUT:
+-9000

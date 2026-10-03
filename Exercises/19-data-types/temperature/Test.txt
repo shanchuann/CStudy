@@ -1,4 +1,0 @@
-INPUT:
-0
-OUTPUT:
-32.00

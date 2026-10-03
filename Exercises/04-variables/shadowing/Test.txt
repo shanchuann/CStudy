@@ -1,0 +1,3 @@
+INPUT:
+OUTPUT:
+global=10 local=20 inner=30

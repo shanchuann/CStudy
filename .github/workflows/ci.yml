@@ -7,6 +7,48 @@ on:
     branches: [ "*" ]
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install ruff
+        run: python -m pip install ruff
+      - name: Lint (pyflakes rules)
+        run: python -m ruff check .
+
+  test-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install coverage
+        run: python -m pip install coverage
+      - name: Python core tests (with coverage)
+        run: |
+          python -m coverage run -m unittest discover -s tests -p 'test_*.py' -v
+          python -m coverage report -m
+      - name: CLI smoke tests
+        run: |
+          bash ./cstudy.sh validate --compile --jobs 4
+          bash ./cstudy.sh check 00-introduction/compile-run
+          bash ./cstudy.sh list
+          bash ./cstudy.sh doctor --json
+      - name: Repository consistency
+        run: |
+          python scripts/generate_exercise_map.py
+          git diff --exit-code -- book/exercise-map.json
+          python scripts/new_exercise.py 08-arrays/ci-smoke --title "CI smoke" --tags ci
+          test -f output/specs/08-arrays/ci-smoke/spec.json
+          test -f output/specs/08-arrays/ci-smoke/starter.c
+          test -f output/specs/08-arrays/ci-smoke/solution.c
+          test -f output/specs/08-arrays/ci-smoke/statement.md
+          rm -rf output/specs/08-arrays/ci-smoke
+
   test-windows:
     runs-on: windows-latest
     steps:
@@ -18,24 +60,10 @@ jobs:
         run: python -m unittest discover -s tests -p 'test_*.py' -v
       - name: CLI smoke tests
         run: |
-          .\cstudy.ps1 validate --compile
+          .\cstudy.ps1 validate
+          .\cstudy.ps1 check 00-introduction/compile-run
           .\cstudy.ps1 list
           .\cstudy.ps1 doctor --json
-
-  test-linux:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - name: Python core tests
-        run: python -m unittest discover -s tests -p 'test_*.py' -v
-      - name: CLI smoke tests
-        run: |
-          bash ./cstudy.sh validate --compile
-          bash ./cstudy.sh list
-          bash ./cstudy.sh doctor --json
 
   test-macos:
     runs-on: macos-latest
@@ -48,6 +76,38 @@ jobs:
         run: python -m unittest discover -s tests -p 'test_*.py' -v
       - name: CLI smoke tests
         run: |
-          bash ./cstudy.sh validate --compile
+          bash ./cstudy.sh validate
+          bash ./cstudy.sh check 00-introduction/compile-run
           bash ./cstudy.sh list
           bash ./cstudy.sh doctor --json
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Build the wheel
+        run: python -m pip wheel --no-deps -w dist .
+      - name: Install into a clean venv
+        run: |
+          python -m venv .venv-pkg
+          .venv-pkg/bin/python -m pip install dist/*.whl
+      - name: Console entry point resolves the catalogue
+        run: |
+          .venv-pkg/bin/cstudy --version
+          CSTUDY_ROOT="$PWD" .venv-pkg/bin/cstudy doctor --json > /tmp/doctor.json
+          CSTUDY_ROOT="$PWD" .venv-pkg/bin/cstudy list --json > /tmp/list.json
+          .venv-pkg/bin/cstudy list --json > /tmp/empty.json
+          python - <<'PY'
+          import json
+          doctor = json.load(open("/tmp/doctor.json"))
+          listing = json.load(open("/tmp/list.json"))
+          empty = json.load(open("/tmp/empty.json"))
+          assert doctor["status"] == "ready", doctor
+          assert listing["total"] >= 90, listing["total"]
+          assert any(item["id"] == "00-introduction/compile-run" for item in listing["exercises"])
+          assert empty["total"] == 0, empty["total"]  # no catalogue next to the installed module
+          print("packaged CLI ok:", listing["total"], "exercises")
+          PY

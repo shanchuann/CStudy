@@ -1,0 +1,8 @@
+# Lint gate: pyflakes rules (unused imports, unused variables, undefined names)
+# plus syntax errors. Authoring scratch under output/ is not part of the repo.
+target-version = "py39"
+line-length = 120
+exclude = ["output"]
+
+[lint]
+select = ["F", "E9"]
