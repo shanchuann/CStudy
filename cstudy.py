@@ -77,7 +77,7 @@ STATE_DIR = ROOT / ".cstudy"
 STATE_FILE = STATE_DIR / "state.json"
 CONFIG_FILE = STATE_DIR / "config.json"
 LOG_DIR = STATE_DIR / "logs"
-VERSION = "0.5.0"
+VERSION = "0.6.0"
 MAX_LOG_BYTES = 2 * 1024 * 1024
 LOG_RETENTION_DAYS = 30
 EXIT_OK, EXIT_FAILED, EXIT_USAGE = 0, 1, 2
@@ -243,7 +243,8 @@ def set_current_exercise(directory: Optional[Path], state: Optional[dict] = None
 
 def settings() -> dict:
     defaults = {"auto_next": False, "timeout_seconds": 2.0, "total_timeout_seconds": 10.0,
-                "max_output_bytes": 1024 * 1024, "ai_model": "gpt-4o-mini",
+                "max_output_bytes": 1024 * 1024, "compiler": "", "cflags": "",
+                "ai_model": "gpt-4o-mini",
                 "ai_api_base": "https://api.openai.com/v1", "ai_api_mode": "chat"}
     value = load_json(CONFIG_FILE, defaults)
     for key, default in defaults.items():
@@ -480,12 +481,92 @@ def progress_status(directory: Path, state: dict) -> str:
     return "todo"
 
 
+def compiler_setting() -> tuple[str, str]:
+    """(configured compiler, where it came from): $CC wins over the config file."""
+    environment = os.environ.get("CC", "").strip()
+    if environment:
+        return environment, "CC"
+    from_config = str(settings().get("compiler", "") or "").strip()
+    if from_config:
+        return from_config, "config"
+    return "", ""
+
+
+def compiler_candidates() -> list[str]:
+    """Compiler commands to try, in priority order."""
+    configured, _source = compiler_setting()
+    return ([configured] if configured else []) + ["gcc", "clang"]
+
+
 def compiler() -> Optional[str]:
-    configured = os.environ.get("CC")
-    for candidate in ([configured] if configured else []) + ["gcc", "clang"]:
+    """The compiler that grading will use, or None when none is installed."""
+    for candidate in compiler_candidates():
         if candidate and shutil.which(candidate):
             return candidate
     return None
+
+
+def compiler_version(command: str) -> str:
+    """First line of <compiler> --version, best effort."""
+    try:
+        result = subprocess.run([command, "--version"], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    lines = ((result.stdout or "") + (result.stderr or "")).strip().splitlines()
+    return lines[0][:120] if lines else ""
+
+
+def compiler_report() -> dict:
+    """What doctor needs to explain the compiler situation."""
+    configured, source = compiler_setting()
+    found = []
+    for candidate in compiler_candidates():
+        path = shutil.which(candidate)
+        if not path or any(item["path"] == path for item in found):
+            continue
+        found.append({"command": candidate, "path": path, "version": compiler_version(path)})
+    effective = found[0] if found else {}
+    warning = ""
+    if configured and not shutil.which(configured):
+        warning = (f"configured compiler not found: {configured} (from {source}); "
+                   "falling back to gcc/clang")
+    return {"effective": effective.get("command", ""), "path": effective.get("path", ""),
+            "configured": configured, "configured_source": source,
+            "candidates": found, "warning": warning}
+
+
+def _split_flags(value: str) -> list[str]:
+    try:
+        return shlex.split(value)
+    except ValueError:
+        return value.split()
+
+
+def compile_flags() -> tuple[list[str], str]:
+    """Extra flags appended after the baseline ones, and where they came from."""
+    environment = os.environ.get("CSTUDY_CFLAGS", "").strip()
+    if environment:
+        return _split_flags(environment), "CSTUDY_CFLAGS"
+    from_config = str(settings().get("cflags", "") or "").strip()
+    if from_config:
+        return _split_flags(from_config), "config"
+    fallback = os.environ.get("CFLAGS", "").strip()
+    if fallback:
+        return _split_flags(fallback), "CFLAGS"
+    return [], ""
+
+
+def compile_command(cc: str, sources: list[str], output: str) -> list[str]:
+    """The single place that decides how an exercise is compiled.
+
+    Baseline flags first, then user flags (so they can override the baseline),
+    then -lm on the platforms that need it, then the output path.
+    """
+    extra, _source = compile_flags()
+    command = [cc, "-std=c11", "-Wall", "-Wextra", "-O2", *sources, *extra]
+    if os.name != "nt" and "-lm" not in extra:
+        command.append("-lm")
+    return command + ["-o", output]
 
 
 def terminate(process: subprocess.Popen[str]) -> None:
@@ -669,7 +750,7 @@ def grade(directory: Path, timeout: float, total_timeout: float, max_output: int
             shutil.copyfile(original, target)
             compile_sources.append(target.name)
         binary = temp / ("solution.exe" if os.name == "nt" else "solution")
-        command = [cc, "-std=c11", "-Wall", "-Wextra", "-O2", *compile_sources, "-o", str(binary)]
+        command = compile_command(cc, compile_sources, str(binary))
         try:
             # The exercise budget applies to the user's program, not compiler
             # startup.  Hosted runners can spend several seconds launching
@@ -735,7 +816,7 @@ def compile_only(directory: Path, timeout: float) -> dict:
             target = temp / Path(name).name
             shutil.copyfile(original, target); names.append(target.name)
         binary = temp / ("solution.exe" if os.name == "nt" else "solution")
-        command = [cc, "-std=c11", "-Wall", "-Wextra", "-O2", *names, "-o", str(binary)]
+        command = compile_command(cc, names, str(binary))
         try:
             completed = subprocess.run(command, cwd=temp, text=True, capture_output=True, timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -1859,6 +1940,8 @@ def command_curriculum(args: argparse.Namespace) -> int:
 def command_doctor(args: argparse.Namespace) -> int:
     exercises = discover(include_hidden=True, include_disabled=True)
     ai_cfg = ai_configuration()
+    compilers = compiler_report()
+    extra_flags, flags_source = compile_flags()
     invalid = []
     for directory in exercises:
         source, tests = exercise_files(directory)
@@ -1867,18 +1950,39 @@ def command_doctor(args: argparse.Namespace) -> int:
     report = {
         "platform": platform.platform(),
         "python": platform.python_version(),
-        "compiler": compiler() or "",
+        "compiler": compilers["effective"],
+        "compiler_path": compilers["path"],
+        "compiler_configured": compilers["configured"],
+        "compiler_candidates": compilers["candidates"],
+        "compile_flags": extra_flags,
+        "compile_flags_source": flags_source,
+        "links_libm": os.name != "nt",
         "exercise_count": len(exercises),
         "invalid_exercises": invalid,
         "api_configured": bool(ai_cfg["api_key"]),
         "api_base": ai_cfg["api_base"],
         "ai_model": ai_cfg["model"],
-        "status": "ready" if compiler() and exercises and not invalid else "not_ready",
+        "status": "ready" if compilers["effective"] and exercises and not invalid else "not_ready",
     }
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2))
     else:
-        for key, value in report.items(): print(f"{key}: {value}")
+        print(f"platform: {report['platform']}")
+        print(f"python: {report['python']}")
+        print(f"compiler: {report['compiler'] or '(none found)'}")
+        for item in report["compiler_candidates"]:
+            print(f"  candidate: {item['command']} -> {item['path']}  [{item['version']}]")
+        flags = " ".join(report["compile_flags"]) or "(none)"
+        print(f"compile_flags: {flags}" + (f"  (from {flags_source})" if flags_source else ""))
+        print(f"links_libm: {report['links_libm']}")
+        print(f"exercise_count: {report['exercise_count']}")
+        print(f"invalid_exercises: {report['invalid_exercises']}")
+        print(f"api_configured: {report['api_configured']}")
+        print(f"api_base: {report['api_base']}")
+        print(f"ai_model: {report['ai_model']}")
+        print(f"status: {report['status']}")
+        if compilers["warning"]:
+            print("warning: " + compilers["warning"])
         if not report["api_configured"]:
             print("note: API AI is optional; run `cstudy ai --setup` to configure it")
     return EXIT_OK if report["status"] == "ready" else EXIT_FAILED

@@ -65,6 +65,18 @@ class TestRepository(unittest.TestCase):
         result = cstudy.command_doctor(type("Args", (), {"json": True})())
         self.assertEqual(result, 0)
 
+    def test_doctor_reports_compiler_details(self):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            result = cstudy.command_doctor(type("Args", (), {"json": True})())
+        report = json.loads(output.getvalue())
+        self.assertEqual(result, 0, output.getvalue())
+        self.assertTrue(report["compiler"])
+        self.assertIn("compiler_candidates", report)
+        self.assertIn("compile_flags", report)
+        self.assertIn("links_libm", report)
+        self.assertTrue(any(item["path"] for item in report["compiler_candidates"]))
+
     def test_disabled_exercise_is_hidden_from_default_discovery(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp); directory = root / "Exercises" / "disabled"; directory.mkdir(parents=True)
@@ -317,6 +329,21 @@ class TestCommandBehaviour(unittest.TestCase):
         self.assertEqual(result, cstudy.EXIT_OK)
         self.assertEqual(report["total"], 1)
 
+    def test_extra_flags_reach_the_compiler(self):
+        directory = self.add_exercise("01-one")
+        os.environ["CSTUDY_CFLAGS"] = "-this-flag-does-not-exist"
+        self.addCleanup(os.environ.pop, "CSTUDY_CFLAGS", None)
+        result = cstudy.grade(directory, 1.0, 3.0, 4096)
+        self.assertEqual(result["status"], "compile_error")
+
+    @unittest.skipIf(os.name == "nt", "MinGW links libm through the C runtime")
+    def test_math_functions_link_without_user_flags(self):
+        source = '#include <stdio.h>\n#include <math.h>\nint main(void){printf("%.1f\n", sqrt(4.0));}\n'
+        directory = self.add_exercise("01-math", source=source)
+        (directory / "Test.txt").write_text("INPUT:\nOUTPUT:\n2.0\n", encoding="utf-8")
+        result = cstudy.grade(directory, 1.0, 3.0, 4096)
+        self.assertEqual(result["status"], "passed", result.get("compile"))
+
     def test_default_jobs_is_bounded(self):
         self.assertEqual(cstudy.default_jobs(0), 1)
         self.assertEqual(cstudy.default_jobs(1), 1)
@@ -445,6 +472,66 @@ class TestCommandBehaviour(unittest.TestCase):
                          (directory / "Ques.c.bak").read_text(encoding="utf-8"))
         self.assertFalse((directory / "done.flag").exists())
         self.assertEqual(cstudy.current_state()["exercises"], {})
+
+
+class TestCompilerConfiguration(unittest.TestCase):
+    """Compiler selection, extra flags and the -lm policy."""
+
+    ENV_KEYS = ("CC", "CFLAGS", "CSTUDY_CFLAGS")
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.patcher = mock.patch.multiple(cstudy, CONFIG_FILE=self.root / "config.json",
+                                           STATE_DIR=self.root)
+        self.patcher.start()
+        self.addCleanup(self.patcher.stop)
+        self.addCleanup(self.temp.cleanup)
+        self.saved = {key: os.environ.get(key) for key in self.ENV_KEYS}
+        self.addCleanup(self.restore_environment)
+        for key in self.ENV_KEYS:
+            os.environ.pop(key, None)
+
+    def restore_environment(self):
+        for key, value in self.saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    def test_baseline_command_and_libm_policy(self):
+        command = cstudy.compile_command("gcc", ["Ques.c"], "out.exe")
+        self.assertEqual(command[:5], ["gcc", "-std=c11", "-Wall", "-Wextra", "-O2"])
+        self.assertIn("Ques.c", command)
+        self.assertEqual(command[-2:], ["-o", "out.exe"])
+        if os.name == "nt":
+            self.assertNotIn("-lm", command)
+        else:
+            self.assertIn("-lm", command)
+
+    def test_user_flags_come_last_and_libm_is_not_duplicated(self):
+        os.environ["CSTUDY_CFLAGS"] = "-O0 -lm"
+        command = cstudy.compile_command("gcc", ["Ques.c"], "out")
+        self.assertLess(command.index("-O2"), command.index("-O0"))
+        self.assertEqual(command.count("-lm"), 1)
+
+    def test_flag_precedence_is_environment_then_config_then_cflags(self):
+        os.environ["CFLAGS"] = "-DFROM_CFLAGS"
+        self.assertEqual(cstudy.compile_flags(), (["-DFROM_CFLAGS"], "CFLAGS"))
+        cstudy.save_settings({"cflags": "-DFROM_CONFIG"})
+        self.assertEqual(cstudy.compile_flags(), (["-DFROM_CONFIG"], "config"))
+        os.environ["CSTUDY_CFLAGS"] = "-DFROM_ENV -g"
+        self.assertEqual(cstudy.compile_flags(), (["-DFROM_ENV", "-g"], "CSTUDY_CFLAGS"))
+
+    def test_compiler_precedence_and_missing_compiler_warning(self):
+        self.assertEqual(cstudy.compiler_setting(), ("", ""))
+        cstudy.save_settings({"compiler": "definitely-not-a-compiler"})
+        self.assertEqual(cstudy.compiler_setting(), ("definitely-not-a-compiler", "config"))
+        report = cstudy.compiler_report()
+        self.assertIn("definitely-not-a-compiler", report["warning"])
+        self.assertIn(report["configured_source"], {"config", "CC"})
+        os.environ["CC"] = "cc-from-the-environment"
+        self.assertEqual(cstudy.compiler_setting(), ("cc-from-the-environment", "CC"))
 
 
 class TestWatchCommands(unittest.TestCase):

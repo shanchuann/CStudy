@@ -91,6 +91,33 @@ cstudy --version
 | Windows | 推荐 PowerShell 7 |
 | Linux/macOS | Bash 或兼容 Shell |
 
+### 编译器配置
+
+判题默认用 `gcc`（找不到就用 `clang`），按下面的顺序决定：
+
+| 优先级 | 来源 | 说明 |
+| --- | --- | --- |
+| 1 | 环境变量 `CC` | 例如 `$env:CC = "D:\mingw64\bin\gcc.exe"`，支持绝对路径 |
+| 2 | `.cstudy/config.json` 的 `compiler` | 适合"每套题库固定一个编译器" |
+| 3 | `PATH` 里的 `gcc` → `clang` | 最省事，装好即可 |
+
+编译命令固定为 `-std=c11 -Wall -Wextra -O2`，**非 Windows 会自动追加 `-lm`**（所以写 `sqrt/pow` 也能通过；Windows 的 MinGW 不需要它）。想加自己的参数：
+
+| 优先级 | 来源 |
+| --- | --- |
+| 1 | 环境变量 `CSTUDY_CFLAGS`（如 `-O0 -g -fsanitize=address`） |
+| 2 | `.cstudy/config.json` 的 `cflags` |
+| 3 | 环境变量 `CFLAGS`（兜底；注意它会作用于所有题，`-Werror` 之类可能让判题失败） |
+
+追加的参数排在基线参数**之后**，因此可以覆盖基线（例如 `-O0` 覆盖 `-O2`）。检查当前实际使用的编译器与参数：
+
+```powershell
+py cstudy.py doctor          # compiler / candidate / compile_flags / links_libm / status
+py cstudy.py doctor --json   # 机器可读
+```
+
+`doctor` 会列出所有候选编译器（路径 + 版本），并在 `CC` 或配置指向不存在的程序时给出 warning（此时会静默回退到 `gcc/clang`）。
+
 ### Windows
 
 ```powershell

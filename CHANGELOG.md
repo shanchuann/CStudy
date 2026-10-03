@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.0
+
+### 编译器配置
+
+- 编译器选择改为三级：环境变量 `CC` → `.cstudy/config.json` 的 `compiler` → `PATH` 中的 `gcc` → `clang`；`CC` 支持绝对路径。
+- 新增额外编译参数：`CSTUDY_CFLAGS` → 配置文件的 `cflags` → `CFLAGS`（兜底），追加在基线参数之后，因此可以覆盖基线（如 `-O0` 覆盖 `-O2`）。
+- 非 Windows 平台自动追加 `-lm`：学习者直接写 `sqrt/pow/fabs` 也能通过；Windows 的 MinGW 不需要它。用户自己传了 `-lm` 时不会重复。
+- 编译命令的拼装收敛到唯一入口 `compile_command()`，判题与 `validate --compile` 共用，不再各写一份。
+- `doctor` 输出增强：列出所有候选编译器（命令 → 绝对路径 + 版本）、当前生效的额外参数及其来源、是否追加 `-lm`；当 `CC`/配置指向不存在的程序时给出 warning（此前是静默回退）。
+- 新增 `compiler`、`cflags` 两个配置键（`.cstudy/config.json`），单测覆盖选择顺序、参数优先级、`-lm` 策略与 `doctor` 新字段。
+
 ## 0.5.0
 
 ### 性能
