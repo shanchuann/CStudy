@@ -99,7 +99,8 @@ jobs:
           .venv-pkg/bin/cstudy --version
           CSTUDY_ROOT="$PWD" .venv-pkg/bin/cstudy doctor --json > /tmp/doctor.json
           CSTUDY_ROOT="$PWD" .venv-pkg/bin/cstudy list --json > /tmp/list.json
-          .venv-pkg/bin/cstudy list --json > /tmp/empty.json
+          # from a directory without Exercises/, the fallback must not invent a catalogue
+          (cd /tmp && "$GITHUB_WORKSPACE/.venv-pkg/bin/cstudy" list --json > /tmp/empty.json)
           python - <<'PY'
           import json
           doctor = json.load(open("/tmp/doctor.json"))
